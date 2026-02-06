@@ -1,0 +1,12 @@
+# Build artifacts
+build/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+
+# Daisy library build artifacts
+libDaisy/build/
+DaisySP/build/
