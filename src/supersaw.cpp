@@ -130,7 +130,7 @@ float SuperSaw::ProcessAuthentic() {
             // We approximate with float for the mixing stage since the
             // critical character comes from the oscillator arithmetic.
             int32_t scaled = static_cast<int32_t>(
-                static_cast<float>(saw_[i]) * mix_
+                static_cast<float>(saw_[i]) * mix_ * mix_
             );
             sum = Wrap24(sum + scaled);
         }
@@ -182,7 +182,7 @@ float SuperSaw::ProcessFloat() {
         if (i == 0) {
             sum += saw_f_[i];
         } else {
-            sum += saw_f_[i] * mix_;
+            sum += saw_f_[i] * mix_ * mix_;
         }
     }
 

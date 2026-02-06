@@ -314,59 +314,62 @@ TEST_CASE("HPF removes DC offset from output") {
 // Parabolic mix curve (Szabo)
 // ============================================================================
 
-// Helper: measure RMS energy of SuperSaw at a given mix value.
-// Re-initializes engine each time to ensure identical starting state.
-// Uses low frequency in authentic mode to avoid 24-bit sum wrapping artifacts.
-static double measureEnergy(float mix, bool authentic, int settle, int N) {
-    SuperSaw ss;
-    ss.Init(kSampleRate);
-    ss.SetFreq(authentic ? 20.0f : 440.0f);
-    ss.SetDetune(0.0f);
-    ss.SetAuthentic(authentic);
-    ss.SetMix(mix);
-    for (int i = 0; i < settle; i++) ss.Process();
-    double energy = 0.0;
-    for (int i = 0; i < N; i++) {
-        float s = ss.Process();
-        energy += s * s;
-    }
-    return energy;
-}
-
 TEST_CASE("Mix curve is parabolic, not linear (authentic)") {
-    // With detune=0 and deterministic init, all 7 oscs are phase-locked.
-    // Output amplitude = (1 + 6*effective_mix) * single_osc.
-    // Energy ∝ (1 + 6*m_eff)^2.
+    // With detune=0 and deterministic init (all phases zero), all 7 oscs
+    // produce identical values. Output amplitude factor = 1 + 6*mix_eff.
+    // Parabolic: mix_eff = mix^2, so mix=0.5 -> factor = 1 + 6*0.25 = 2.5
+    // Linear:    mix_eff = mix,   so mix=0.5 -> factor = 1 + 6*0.5  = 4.0
     //
-    // For parabolic: m_eff = mix^2
-    //   mix=0.5 -> m_eff=0.25 -> amplitude_factor = 1+1.5 = 2.5
-    //   mix=1.0 -> m_eff=1.0  -> amplitude_factor = 1+6   = 7.0
-    //   energy ratio = (2.5/7)^2 = 0.1276
-    //
-    // For linear: m_eff = mix
-    //   mix=0.5 -> amplitude_factor = 1+3 = 4
-    //   energy ratio = (4/7)^2 = 0.3265
-    const int settle = 2000;
-    const int N = 48000;
+    // Use low freq so phase values stay small and 24-bit sum doesn't wrap.
+    // Minimize HPF impact with very low filter offset.
+    auto getSample = [](float mix) {
+        SuperSaw ss;
+        ss.Init(kSampleRate);
+        ss.SetFreq(10.0f);
+        ss.SetDetune(0.0f);
+        ss.SetAuthentic(true);
+        ss.SetFilterOffset(0.01f);
+        ss.SetMix(mix);
+        ss.Process();  // skip first (phase=0)
+        return ss.Process();
+    };
 
-    double e_full = measureEnergy(1.0f, true, settle, N);
-    double e_half = measureEnergy(0.5f, true, settle, N);
+    float s_center = getSample(0.0f);  // 1 osc only
+    float s_half   = getSample(0.5f);  // parabolic: 1 + 6*0.25 = 2.5x
+    float s_full   = getSample(1.0f);  // 1 + 6*1.0 = 7.0x
 
-    double ratio = e_half / e_full;
-    // Parabolic: ~0.128; Linear: ~0.327
-    // Pass if clearly parabolic (below midpoint 0.22)
-    CHECK(ratio < 0.22);
-    CHECK(ratio > 0.05);  // sanity: not zero
+    float ratio_half = s_half / s_center;
+    float ratio_full = s_full / s_center;
+
+    CHECK(ratio_full == doctest::Approx(7.0f).epsilon(0.05));
+    CHECK(ratio_half == doctest::Approx(2.5f).epsilon(0.05));
 }
 
 TEST_CASE("Mix curve is parabolic, not linear (float mode)") {
-    const int settle = 2000;
-    const int N = 48000;
+    // Float mode: no wrapping, use energy over time with phase-locked oscs.
+    // Energy ∝ (1 + 6*m_eff)^2. Parabolic: ratio = (2.5/7)^2 ≈ 0.128
+    auto measureEnergy = [](float mix) {
+        SuperSaw ss;
+        ss.Init(kSampleRate);
+        ss.SetFreq(440.0f);
+        ss.SetDetune(0.0f);
+        ss.SetAuthentic(false);
+        ss.SetMix(mix);
+        for (int i = 0; i < 2000; i++) ss.Process();
+        double energy = 0.0;
+        const int N = 48000;
+        for (int i = 0; i < N; i++) {
+            float s = ss.Process();
+            energy += s * s;
+        }
+        return energy;
+    };
 
-    double e_full = measureEnergy(1.0f, false, settle, N);
-    double e_half = measureEnergy(0.5f, false, settle, N);
-
+    double e_full = measureEnergy(1.0f);
+    double e_half = measureEnergy(0.5f);
     double ratio = e_half / e_full;
+
+    // Parabolic: ~0.128; Linear: ~0.327
     CHECK(ratio < 0.22);
     CHECK(ratio > 0.05);
 }
