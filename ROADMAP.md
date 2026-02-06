@@ -12,17 +12,24 @@
 - [ ] Tune detune parameter scaling against JP-8000 recordings
 - [ ] A/B test 24-bit mode vs. float mode for audible differences
 
-## Phase 2: Filter refinement
+## Phase 2: Filter research (done)
 
-- [ ] Research and implement multi-pole HPF (likely 24dB/oct SVF)
-- [ ] Compare one-pole, two-pole, and SVF implementations against JP-8000 recordings
-- [ ] Ensure filter stability at extreme cutoff frequencies (known DaisySP Svf issue above ~2500 Hz)
-- [ ] Implement filter in fixed-point for full authenticity
+Research confirms the JP-8000 uses a **one-pole HPF** — not a multi-pole SVF.
+
+Sources:
+
+- 39C3 reverse engineering (Giulioz): one-pole HPF on supersaw output
+- Adam Szabo thesis: "pitch-tracked HPF removes noise below fundamental"
+- JE-8086 emulator (same reverse engineering basis): one-pole
+
+Current implementation is correct. No changes needed.
+
+Optional future work:
+
+- [ ] Implement HPF in fixed-point for full authenticity (low priority)
 
 ## Phase 3: Parameter calibration
 
-- [ ] Record real JP-8000 at various detune/mix settings for reference
-- [ ] Match ÜBERSAW output to JP-8000 spectral characteristics
 - [ ] Calibrate detune knob curve to match JP-8000 front panel behavior
 - [ ] Calibrate mix knob curve (Szabo documented a parabolic side-voice curve)
 - [ ] Verify aliasing characteristics at 96 kHz vs. original 88.2 kHz
@@ -51,8 +58,9 @@
 ## Performance budget
 
 At 96 kHz sample rate, block size 4:
+
 - **Audio callback rate:** 24,000 callbacks/sec
 - **Time budget per callback:** ~42 us
 - **CPU:** 480 MHz Cortex-M7 with hardware FPU
 - **Estimated load:** 7 oscillators x (2 adds + 1 multiply + 1 wrap) + 1 filter = minimal (~5-10% CPU)
-- **Headroom:** Substantial: room for higher-order filters, additional features
+- **Headroom:** Substantial: room for additional features

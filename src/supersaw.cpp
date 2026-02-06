@@ -195,12 +195,8 @@ float SuperSaw::ProcessFloat() {
 
 void SuperSaw::HighPass::SetFreq(float freq_hz, float sr) {
     // One-pole high-pass filter coefficient.
-    // The JP-8000 likely uses something more sophisticated (possibly a
-    // multi-pole SVF), but a one-pole HPF captures the essential behavior
-    // of removing sub-fundamental content while tracking pitch.
-    //
-    // TODO: Investigate 24dB SVF HPF as suggested by community analysis
-    // for closer match to original filter characteristics.
+    // Research confirms this is the correct topology: 39C3 reverse engineering,
+    // Adam Szabo's analysis, and JE-8086 emulator all use one-pole HPF.
     if (freq_hz < 1.0f) freq_hz = 1.0f;
     if (freq_hz > sr * 0.45f) freq_hz = sr * 0.45f;
     float rc = 1.0f / (2.0f * 3.14159265f * freq_hz);

@@ -124,6 +124,6 @@ defines the desired behavior. All tests must pass before considering work comple
 
 ## Current Phase
 
-Phase 1 (core engine) mostly complete. See `ROADMAP.md` for remaining work:
-V/Oct verification, detune calibration, A/B testing. Phase 2 targets multi-pole
-filter refinement.
+Phase 1 (core engine) and Phase 2 (filter) complete. Research confirms one-pole
+HPF is the correct JP-8000 topology (39C3, Szabo, JE-8086). See `ROADMAP.md`
+for remaining Phase 1 items and Phase 3+ work.

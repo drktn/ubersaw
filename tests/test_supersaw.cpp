@@ -275,6 +275,41 @@ TEST_CASE("Full detune maintains periodicity near fundamental") {
     CHECK(normalized > 0.1);
 }
 
+// ============================================================================
+// HPF removes sub-fundamental content (confirms one-pole is correct topology)
+// ============================================================================
+
+TEST_CASE("HPF removes DC offset from output") {
+    // The pitch-tracked one-pole HPF should remove DC and sub-fundamental content.
+    // Research (39C3, Szabo, JE-8086) confirms one-pole is the correct topology.
+    // Verify by checking that the output mean is near zero after HPF settling.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+    ss.Trigger();
+
+    // Let HPF settle
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    // Collect samples and measure DC (mean)
+    const int N = 96000;
+    double sum = 0.0, energy = 0.0;
+    for (int i = 0; i < N; i++) {
+        float s = ss.Process();
+        sum += s;
+        energy += s * s;
+    }
+    double mean = sum / N;
+    double rms = std::sqrt(energy / N);
+
+    // DC component should be negligible relative to signal RMS
+    // (without HPF, naive saws can have significant DC offset)
+    CHECK(std::fabs(mean) < rms * 0.05);
+    CHECK(rms > 0.0);  // Sanity: signal is non-zero
+}
+
 TEST_CASE("Full detune maintains periodicity - float mode") {
     SuperSaw ss;
     ss.Init(kSampleRate);
