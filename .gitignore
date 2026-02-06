@@ -4,8 +4,8 @@ build/
 # macOS
 .DS_Store
 
-# IDE
-.vscode/
+# Test build artifacts
+tests/test_runner
 
 # Daisy library build artifacts
 libDaisy/build/

@@ -107,30 +107,6 @@ make program-dfu
 make program
 # Uses OpenOCD — requires ST-Link or compatible debug probe
 ```
-
-## IDE setup (VS Code recommended)
-
-Create `.vscode/c_cpp_properties.json`:
-```json
-{
-    "configurations": [{
-        "name": "ARM Cortex-M7",
-        "includePath": [
-            "${workspaceFolder}/src",
-            "${workspaceFolder}/libDaisy/src",
-            "${workspaceFolder}/libDaisy/Drivers/**",
-            "${workspaceFolder}/DaisySP/Source/**"
-        ],
-        "defines": ["STM32H750xx", "USE_HAL_DRIVER", "HSE_VALUE=16000000"],
-        "compilerPath": "/usr/bin/arm-none-eabi-gcc",
-        "cStandard": "c11",
-        "cppStandard": "gnu++14",
-        "intelliSenseMode": "gcc-arm"
-    }],
-    "version": 4
-}
-```
-
 ## Troubleshooting
 
 **"dfu-util: No DFU capable USB device available"**: The Daisy is not in DFU mode. Repeat the BOOT + RESET button sequence.

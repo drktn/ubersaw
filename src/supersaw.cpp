@@ -48,15 +48,9 @@ void SuperSaw::SetFreq(float freq_hz) {
 }
 
 void SuperSaw::SetDetune(float detune) {
-    // Scale the 0..1 user parameter to a fixed-point value.
-    // The exact scaling determines how wide the detune spreads.
-    // On the JP-8000, the detune knob maps through MIDI CC (0-127).
-    // We scale to a range that produces musically useful detuning.
-    //
-    // NOTE: The precise mapping from the JP-8000's front panel to the
-    // internal 'detune' variable involves the synth's parameter scaling,
-    // which may need tuning by ear against the original hardware.
-    detune_param_ = static_cast<int32_t>(detune * 127.0f);
+    // Store raw 0..1 parameter. Scaling to fixed-point happens in Process.
+    // Full detune (1.0) produces ~1 semitone spread on the widest osc pair.
+    detune_amount_ = detune;
 }
 
 void SuperSaw::SetMix(float mix) {
@@ -110,12 +104,15 @@ float SuperSaw::ProcessAuthentic() {
 
     for (int i = 0; i < NUM_OSCS; i++) {
         // Calculate per-voice detuning:
-        //   voice_detune = (detune_table[i] * (pitch * detune)) >> 7
+        //   voice_detune = (detune_table[i] * pitch_x_detune) >> 7
         //
-        // The multiplication of pitch × detune scales the detune offset
-        // proportionally to frequency — higher notes get wider absolute
-        // detuning, maintaining consistent musical intervals.
-        int32_t pitch_x_detune = Mul24(pitch_inc_, detune_param_);
+        // Scaling: full detune (1.0) → ~1 semitone spread on widest pair.
+        //   max ratio = 2^(1/12) - 1 ≈ 0.0595
+        //   kMaxDetuneScaled = 0.0595 * 128 / 1440 ≈ 0.00529
+        static constexpr float kMaxDetuneScaled = 0.00529f;
+        int32_t pitch_x_detune = static_cast<int32_t>(
+            static_cast<float>(pitch_inc_) * detune_amount_ * kMaxDetuneScaled
+        );
         int32_t voice_detune = (static_cast<int64_t>(kDetuneTable[i]) * pitch_x_detune) >> 7;
         voice_detune = Wrap24(voice_detune);
 
@@ -167,10 +164,9 @@ float SuperSaw::ProcessFloat() {
        -1440.0f / 1440.0f    // -1.0000
     };
 
-    // Max detune in semitones at full detune setting (approximate)
-    float max_detune_semitones = 0.5f;
-    float detune_factor = (mix_ > 0.0f) ?
-        (static_cast<float>(detune_param_) / 127.0f) * max_detune_semitones : 0.0f;
+    // Max detune in semitones at full detune setting (~1 semitone, matching authentic)
+    float max_detune_semitones = 1.0f;
+    float detune_factor = detune_amount_ * max_detune_semitones;
 
     for (int i = 0; i < NUM_OSCS; i++) {
         // Calculate detuned frequency

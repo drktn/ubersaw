@@ -1,7 +1,11 @@
-# ÜBERSAW — Claude Code Context
+# CLAUDE.md
+
+This file provides guidance to Claude Code when working with code in this repository.
+
+## ÜBERSAW — Claude Code Context
 
 JP-8000 supersaw recreation for Daisy Patch Init (Eurorack). 24-bit fixed-point,
-7 naive saw oscillators, pitch-tracked HPF. No test framework.
+7 naive saw oscillators, pitch-tracked HPF. TDD workflow with doctest.
 
 ## Build Commands
 
@@ -19,6 +23,9 @@ make clean && make
 
 # flash via DFU (hold BOOT, press RESET, release both, then:)
 make program-dfu
+
+# run desktop unit tests (no hardware needed)
+cd tests && make test
 ```
 
 **Toolchain:** `arm-none-eabi-gcc` v10.3-2021.10 (exact version required), `dfu-util`, GNU `make`
@@ -30,6 +37,7 @@ src/main.cpp        — entry point, audio callback, hardware I/O, V/Oct convers
 src/supersaw.h      — SuperSaw class definition, 24-bit helpers (Wrap24, Mul24)
 src/supersaw.cpp    — engine implementation (ProcessAuthentic, ProcessFloat)
 Makefile            — TARGET=uebersaw, -O2, includes libDaisy/core/Makefile
+tests/              — desktop unit tests (doctest), compiled with host g++/clang++
 libDaisy/           — hardware abstraction (git submodule)
 DaisySP/            — DSP library (git submodule)
 docs/               — algorithm.md, build-guide.md, controls.md
@@ -101,6 +109,18 @@ INT24_RANGE = 16777216   // 2^24
 - Hardware object: `DaisyPatchSM hw` (namespace `daisy::patch_sm`)
 - Audio callback constraints: no malloc, no blocking I/O
 - Estimated CPU load: ~5-10%, substantial headroom
+
+## Development Workflow (TDD)
+
+Write tests before implementing. Cycle: failing test → minimal implementation → refactor.
+Tests compile on desktop (host compiler), no ARM toolchain or hardware needed.
+
+```bash
+cd tests && make test   # run all tests
+```
+
+When fixing bugs or adding features, start with a test that reproduces the issue or
+defines the desired behavior. All tests must pass before considering work complete.
 
 ## Current Phase
 

@@ -26,6 +26,7 @@
 #include "daisy_patch_sm.h"
 #include "daisysp.h"
 #include "supersaw.h"
+#include "voct.h"
 
 using namespace daisy;
 using namespace patch_sm;
@@ -37,41 +38,6 @@ SuperSaw     supersaw;
 // State tracking
 bool prev_gate = false;
 bool prev_button = false;
-
-// ============================================================================
-// Utility: clamp float to range
-// ============================================================================
-
-static inline float fclamp(float val, float min, float max) {
-    return val < min ? min : (val > max ? max : val);
-}
-
-// ============================================================================
-// V/Oct conversion
-// ============================================================================
-
-/// Convert a 1V/Oct CV voltage to frequency in Hz.
-/// 0V = C2 (~65.41 Hz), following Eurorack convention.
-/// The CV input range is -5V to +5V, mapped to 0.0-1.0 by the ADC.
-static float VoctToFreq(float cv_normalized, float knob_normalized) {
-    // Knob provides coarse pitch: spans ~5 octaves (C1 to C6)
-    // CV adds V/Oct on top of knob position
-    //
-    // ADC reads bipolar CV as 0.0 (at -5V) to 1.0 (at +5V)
-    // Convert back to voltage: v = (normalized - 0.5) * 10.0
-    float cv_voltage = (cv_normalized - 0.5f) * 10.0f;
-
-    // Knob maps to base MIDI note range
-    // 0.0 → MIDI 24 (C1, ~32.7 Hz)
-    // 1.0 → MIDI 96 (C7, ~2093 Hz)
-    float base_note = 24.0f + knob_normalized * 72.0f;
-
-    // CV adds 12 semitones per volt (1V/Oct)
-    float total_note = base_note + cv_voltage * 12.0f;
-
-    // MIDI note to frequency: f = 440 * 2^((note - 69) / 12)
-    return 440.0f * powf(2.0f, (total_note - 69.0f) / 12.0f);
-}
 
 // ============================================================================
 // Audio callback — runs at interrupt priority, ~96000/4 = 24000 times/sec

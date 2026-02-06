@@ -127,7 +127,7 @@ private:
 
     // Parameters (in engine-internal formats)
     int32_t pitch_inc_ = 0;       // Base pitch as 24-bit phase increment
-    int32_t detune_param_ = 0;    // Detune amount (scaled for fixed-point math)
+    float   detune_amount_ = 0.0f;// Detune amount (0.0 = unison, 1.0 = max spread)
     float   mix_ = 1.0f;          // Side oscillator mix (0..1)
     float   freq_hz_ = 440.0f;    // Current frequency for filter tracking
     float   filter_offset_ = 1.0f;// HPF cutoff offset ratio
