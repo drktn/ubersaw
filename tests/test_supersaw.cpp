@@ -310,6 +310,154 @@ TEST_CASE("HPF removes DC offset from output") {
     CHECK(rms > 0.0);  // Sanity: signal is non-zero
 }
 
+// ============================================================================
+// Parabolic mix curve (Szabo)
+// ============================================================================
+
+// Helper: measure RMS energy of SuperSaw at a given mix value.
+// Re-initializes engine each time to ensure identical starting state.
+// Uses low frequency in authentic mode to avoid 24-bit sum wrapping artifacts.
+static double measureEnergy(float mix, bool authentic, int settle, int N) {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(authentic ? 20.0f : 440.0f);
+    ss.SetDetune(0.0f);
+    ss.SetAuthentic(authentic);
+    ss.SetMix(mix);
+    for (int i = 0; i < settle; i++) ss.Process();
+    double energy = 0.0;
+    for (int i = 0; i < N; i++) {
+        float s = ss.Process();
+        energy += s * s;
+    }
+    return energy;
+}
+
+TEST_CASE("Mix curve is parabolic, not linear (authentic)") {
+    // With detune=0 and deterministic init, all 7 oscs are phase-locked.
+    // Output amplitude = (1 + 6*effective_mix) * single_osc.
+    // Energy ∝ (1 + 6*m_eff)^2.
+    //
+    // For parabolic: m_eff = mix^2
+    //   mix=0.5 -> m_eff=0.25 -> amplitude_factor = 1+1.5 = 2.5
+    //   mix=1.0 -> m_eff=1.0  -> amplitude_factor = 1+6   = 7.0
+    //   energy ratio = (2.5/7)^2 = 0.1276
+    //
+    // For linear: m_eff = mix
+    //   mix=0.5 -> amplitude_factor = 1+3 = 4
+    //   energy ratio = (4/7)^2 = 0.3265
+    const int settle = 2000;
+    const int N = 48000;
+
+    double e_full = measureEnergy(1.0f, true, settle, N);
+    double e_half = measureEnergy(0.5f, true, settle, N);
+
+    double ratio = e_half / e_full;
+    // Parabolic: ~0.128; Linear: ~0.327
+    // Pass if clearly parabolic (below midpoint 0.22)
+    CHECK(ratio < 0.22);
+    CHECK(ratio > 0.05);  // sanity: not zero
+}
+
+TEST_CASE("Mix curve is parabolic, not linear (float mode)") {
+    const int settle = 2000;
+    const int N = 48000;
+
+    double e_full = measureEnergy(1.0f, false, settle, N);
+    double e_half = measureEnergy(0.5f, false, settle, N);
+
+    double ratio = e_half / e_full;
+    CHECK(ratio < 0.22);
+    CHECK(ratio > 0.05);
+}
+
+// ============================================================================
+// Multi-octave V/Oct tracking verification
+// ============================================================================
+
+TEST_CASE("V/Oct tracks correctly across 5+ octaves via zero-crossings") {
+    // Verify the SuperSaw engine produces the correct frequency at each octave
+    // by counting zero-crossings. detune=0, mix=0 -> center osc only.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetDetune(0.0f);
+    ss.SetMix(0.0f);
+
+    // C2 through C8 (7 octaves). C1 too low for accurate 1s zero-crossing count.
+    struct OctaveTest { float freq; const char* name; };
+    OctaveTest octaves[] = {
+        { 65.41f,   "C2" },
+        { 130.81f,  "C3" },
+        { 261.63f,  "C4" },
+        { 523.25f,  "C5" },
+        { 1046.50f, "C6" },
+        { 2093.00f, "C7" },
+        { 4186.01f, "C8" },
+    };
+
+    for (auto& oct : octaves) {
+        CAPTURE(oct.name);
+        ss.SetFreq(oct.freq);
+
+        // Let HPF settle (longer for low frequencies)
+        int settle = (oct.freq < 100.0f) ? 10000 : 2000;
+        for (int i = 0; i < settle; i++) ss.Process();
+
+        // Count zero-crossings over 1 second
+        int crossings = 0;
+        float prev = ss.Process();
+        const int N = 96000;
+        for (int i = 0; i < N; i++) {
+            float cur = ss.Process();
+            if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f)) {
+                crossings++;
+            }
+            prev = cur;
+        }
+
+        // 2 zero-crossings per cycle -> freq = crossings / 2
+        float measured = static_cast<float>(crossings) / 2.0f;
+        CHECK(measured == doctest::Approx(oct.freq).epsilon(0.02));
+    }
+}
+
+TEST_CASE("VoctToFreq produces correct frequencies across octaves") {
+    // Verify V/Oct math at known MIDI note -> frequency mappings.
+    // With cv=0.5 (0V), total_note = 24 + knob*72
+    // For MIDI note N: knob = (N - 24) / 72
+    struct NoteTest { int midi_note; float expected_freq; const char* name; };
+    NoteTest notes[] = {
+        { 36,  65.41f,   "C2" },
+        { 48,  130.81f,  "C3" },
+        { 60,  261.63f,  "C4" },
+        { 72,  523.25f,  "C5" },
+        { 84,  1046.50f, "C6" },
+        { 96,  2093.00f, "C7 (knob max)" },
+    };
+
+    for (auto& n : notes) {
+        CAPTURE(n.name);
+        float knob = static_cast<float>(n.midi_note - 24) / 72.0f;
+        float freq = VoctToFreq(0.5f, knob);
+        CHECK(freq == doctest::Approx(n.expected_freq).epsilon(0.01));
+    }
+}
+
+TEST_CASE("VoctToFreq: octave doubling via CV across range") {
+    // +1V CV should double frequency regardless of base note.
+    // CV 0.5 = 0V, CV 0.6 = +1V
+    float knob_values[] = { 0.0f, 0.25f, 0.5f, 0.75f };
+    for (float knob : knob_values) {
+        CAPTURE(knob);
+        float f0 = VoctToFreq(0.5f, knob);
+        float f1 = VoctToFreq(0.6f, knob);
+        // Skip if f1 is clamped at upper bound
+        if (f1 < 20000.0f) {
+            CHECK(f1 / f0 == doctest::Approx(2.0f).epsilon(0.01));
+        }
+    }
+}
+
 TEST_CASE("Full detune maintains periodicity - float mode") {
     SuperSaw ss;
     ss.Init(kSampleRate);
