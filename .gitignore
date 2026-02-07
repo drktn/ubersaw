@@ -6,6 +6,8 @@ build/
 
 # Test build artifacts
 tests/test_runner
+tests/test_smooth_runner
+tests/test_gate_runner
 
 # Daisy library build artifacts
 libDaisy/build/
