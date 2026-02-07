@@ -2180,7 +2180,7 @@ TEST_CASE("Fixed-point HPF: authentic output bounded [-1, 1]") {
     ss.SetDetune(1.0f);
     ss.SetMix(1.0f);
     ss.SetAuthentic(true);
-    ss.SetFixedPointHpf(true);
+    // fixed_point_hpf_ is now true by default in authentic mode
 
     for (int i = 0; i < 4096; i++) {
         float s = ss.Process();
@@ -2196,7 +2196,6 @@ TEST_CASE("Fixed-point HPF: removes DC from authentic mode") {
     ss.SetDetune(0.5f);
     ss.SetMix(1.0f);
     ss.SetAuthentic(true);
-    ss.SetFixedPointHpf(true);
 
     // Warm up
     for (int i = 0; i < 2000; i++) ss.Process();
@@ -2224,7 +2223,8 @@ TEST_CASE("Fixed-point HPF: comparable RMS to float HPF") {
     fp.SetDetune(0.5f); fl.SetDetune(0.5f);
     fp.SetMix(1.0f); fl.SetMix(1.0f);
     fp.SetAuthentic(true); fl.SetAuthentic(true);
-    fp.SetFixedPointHpf(true); fl.SetFixedPointHpf(false);
+    // fp uses default (fixed-point HPF), fl explicitly uses float HPF
+    fl.SetFixedPointHpf(false);
 
     // Warm up both
     for (int i = 0; i < 2000; i++) { fp.Process(); fl.Process(); }
@@ -2258,7 +2258,7 @@ TEST_CASE("Fixed-point HPF: pitch tracking works at multiple frequencies") {
         ss.SetDetune(0.0f);
         ss.SetMix(0.0f);
         ss.SetAuthentic(true);
-        ss.SetFixedPointHpf(true);
+        // fixed_point_hpf_ is now true by default
 
         // Warm up
         for (int i = 0; i < 2000; i++) ss.Process();

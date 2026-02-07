@@ -165,12 +165,17 @@ private:
         }
 
         // y[n] = alpha * (y[n-1] + x[n] - x[n-1])
-        // No Wrap24 on intermediates — ESP2 uses 56-bit accumulators.
-        // Only the multiply result (via Mul24Frac) truncates to 24 bits.
+        // ESP2 uses 56-bit accumulators — intermediates are NOT truncated
+        // to 24 bits. At sawtooth discontinuities, (y1 + diff) exceeds
+        // 24-bit range; using Wrap24 here would produce wrong-sign results.
+        // We use 64-bit multiply with >>23 (Q23 format) but NO Wrap24,
+        // matching the ESP2's wide accumulator behavior.
         int32_t Process(int32_t input) {
             int32_t diff = input - x1;
             int32_t sum  = y1 + diff;
-            int32_t out  = Mul24Frac(coeff, sum);
+            int32_t out  = static_cast<int32_t>(
+                (static_cast<int64_t>(coeff) * sum) >> 23
+            );
             x1 = input;
             y1 = out;
             return out;
@@ -198,7 +203,7 @@ private:
     float   freq_hz_ = 440.0f;    // Current frequency for filter tracking
     float   filter_offset_ = 1.0f;// HPF cutoff offset ratio
     bool    authentic_ = true;     // True = 24-bit mode, false = float mode
-    bool    fixed_point_hpf_ = false; // True = 24-bit HPF in authentic mode
+    bool    fixed_point_hpf_ = true;  // 24-bit HPF in authentic mode (matches hardware)
 
     // Anti-click parameter smoothers
     Smooth smooth_detune_;
