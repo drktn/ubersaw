@@ -1612,3 +1612,212 @@ TEST_CASE("Stereo: spread=0 in float mode matches mono Process()") {
         CHECK(r == doctest::Approx(m));
     }
 }
+
+// ============================================================================
+// Voice count (#18)
+// ============================================================================
+
+TEST_CASE("Voice count: default is 7") {
+    // Default voice count should match existing behavior (7 oscs).
+    // Verify output is identical to an engine without SetVoiceCount called.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+
+    SuperSaw ss7;
+    ss7.Init(kSampleRate);
+    ss7.SetFreq(440.0f);
+    ss7.SetDetune(0.5f);
+    ss7.SetMix(1.0f);
+    ss7.SetVoiceCount(7);
+
+    for (int i = 0; i < 4000; i++) {
+        float a = ss.Process();
+        float b = ss7.Process();
+        CHECK(a == doctest::Approx(b));
+    }
+}
+
+TEST_CASE("Voice count: 1 voice is pure saw (no beating)") {
+    // Single osc with full detune should have no beating — autocorrelation
+    // at fundamental should be very high since detune only affects side oscs.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(1.0f);
+    ss.SetMix(1.0f);
+    ss.SetVoiceCount(1);
+
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    const int N = 48000;
+    std::vector<float> samples(N);
+    for (int i = 0; i < N; i++) samples[i] = ss.Process();
+
+    int period = static_cast<int>(kSampleRate / 440.0f);
+    double ac = 0.0, e = 0.0;
+    for (int i = 0; i < N - period; i++) {
+        ac += samples[i] * samples[static_cast<size_t>(i + period)];
+        e += samples[i] * samples[i];
+    }
+    double normalized = (e > 0.0) ? ac / e : 0.0;
+    CHECK(normalized > 0.99);
+}
+
+TEST_CASE("Voice count: 3 voices has less energy than 7") {
+    auto measureRms = [](int count) {
+        SuperSaw ss;
+        ss.Init(kSampleRate);
+        ss.SetFreq(440.0f);
+        ss.SetDetune(0.5f);
+        ss.SetMix(1.0f);
+        ss.SetVoiceCount(count);
+        for (int i = 0; i < 4000; i++) ss.Process();
+        double energy = 0.0;
+        const int N = 48000;
+        for (int i = 0; i < N; i++) {
+            float s = ss.Process();
+            energy += s * s;
+        }
+        return std::sqrt(energy / N);
+    };
+
+    double rms3 = measureRms(3);
+    double rms7 = measureRms(7);
+
+    CHECK(rms3 > 0.0);
+    CHECK(rms7 > 0.0);
+    CHECK(rms3 < rms7);
+}
+
+TEST_CASE("Voice count: invalid values clamped") {
+    // SetVoiceCount snaps to nearest valid: 1, 3, 5, or 7.
+    // 0 -> 1, 2 -> 1 or 3, 4 -> 3 or 5, 6 -> 5 or 7, 100 -> 7
+    // Verify engine produces valid output at each.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+
+    int invalid_values[] = {0, -1, 2, 4, 6, 8, 100};
+    for (int v : invalid_values) {
+        CAPTURE(v);
+        ss.SetVoiceCount(v);
+        for (int i = 0; i < 100; i++) {
+            float out = ss.Process();
+            REQUIRE(std::isfinite(out));
+        }
+    }
+
+    // Specifically: 0 and negative -> 1 voice (min valid)
+    ss.SetVoiceCount(0);
+    ss.SetDetune(1.0f);
+    // With 1 voice, high autocorrelation (pure saw, no beating)
+    for (int i = 0; i < 4000; i++) ss.Process();
+    const int N = 48000;
+    std::vector<float> samples(N);
+    for (int i = 0; i < N; i++) samples[i] = ss.Process();
+    int period = static_cast<int>(kSampleRate / 440.0f);
+    double ac = 0.0, e = 0.0;
+    for (int i = 0; i < N - period; i++) {
+        ac += samples[i] * samples[static_cast<size_t>(i + period)];
+        e += samples[i] * samples[i];
+    }
+    CHECK(ac / e > 0.99);  // Single osc, no beating
+
+    // 100 -> 7 (max valid)
+    ss.SetVoiceCount(100);
+    ss.SetVoiceCount(7);  // reset to known
+    // Just verify no crash
+    for (int i = 0; i < 100; i++) ss.Process();
+}
+
+TEST_CASE("Voice count: 1 voice ignores detune and mix") {
+    // With 1 voice, only center osc is active. Mix only scales side oscs,
+    // detune only shifts side oscs. Output should be identical regardless.
+    SuperSaw ss_a;
+    ss_a.Init(kSampleRate);
+    ss_a.SetFreq(440.0f);
+    ss_a.SetVoiceCount(1);
+    ss_a.SetDetune(0.0f);
+    ss_a.SetMix(0.0f);
+
+    SuperSaw ss_b;
+    ss_b.Init(kSampleRate);
+    ss_b.SetFreq(440.0f);
+    ss_b.SetVoiceCount(1);
+    ss_b.SetDetune(1.0f);
+    ss_b.SetMix(1.0f);
+
+    // Settle smoothers
+    for (int i = 0; i < 4000; i++) {
+        ss_a.Process();
+        ss_b.Process();
+    }
+
+    for (int i = 0; i < 1000; i++) {
+        float a = ss_a.Process();
+        float b = ss_b.Process();
+        CHECK(a == doctest::Approx(b));
+    }
+}
+
+TEST_CASE("Voice count: stereo with reduced voices") {
+    // 3 voices with spread=1 should still produce L/R difference
+    // (2 side oscs panned opposite directions).
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+    ss.SetSpread(1.0f);
+    ss.SetVoiceCount(3);
+    ss.Trigger();
+
+    for (int i = 0; i < 4000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+    }
+
+    int diff_count = 0;
+    for (int i = 0; i < 1000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+        REQUIRE(std::isfinite(l));
+        REQUIRE(std::isfinite(r));
+        if (l != r) diff_count++;
+    }
+    CHECK(diff_count > 900);
+}
+
+TEST_CASE("Voice count: works in float mode") {
+    // Verify voice count works for ProcessFloat path too.
+    auto measureRms = [](int count) {
+        SuperSaw ss;
+        ss.Init(kSampleRate);
+        ss.SetFreq(440.0f);
+        ss.SetDetune(0.5f);
+        ss.SetMix(1.0f);
+        ss.SetAuthentic(false);
+        ss.SetVoiceCount(count);
+        for (int i = 0; i < 4000; i++) ss.Process();
+        double energy = 0.0;
+        const int N = 48000;
+        for (int i = 0; i < N; i++) {
+            float s = ss.Process();
+            energy += s * s;
+        }
+        return std::sqrt(energy / N);
+    };
+
+    double rms1 = measureRms(1);
+    double rms3 = measureRms(3);
+    double rms7 = measureRms(7);
+
+    CHECK(rms1 > 0.0);
+    CHECK(rms1 < rms3);
+    CHECK(rms3 < rms7);
+}

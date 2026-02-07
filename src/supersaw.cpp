@@ -133,6 +133,14 @@ void SuperSaw::SetSpread(float spread) {
     target_spread_ = spread;
 }
 
+void SuperSaw::SetVoiceCount(int count) {
+    // Snap to nearest valid: 1, 3, 5, 7
+    if (count <= 2)      voice_count_ = 1;
+    else if (count <= 4) voice_count_ = 3;
+    else if (count <= 6) voice_count_ = 5;
+    else                 voice_count_ = 7;
+}
+
 void SuperSaw::Trigger() {
     // Randomize all oscillator phases — matches JP-8000 note-on behavior.
     // Each note press produces slightly different timbral character due
@@ -204,7 +212,7 @@ float SuperSaw::ProcessAuthentic() {
 
     int32_t sum = 0;
 
-    for (int i = 0; i < NUM_OSCS; i++) {
+    for (int i = 0; i < voice_count_; i++) {
         // Calculate per-voice detuning:
         //   voice_detune = (detune_table[i] * pitch_x_detune) >> 7
         //
@@ -270,7 +278,7 @@ float SuperSaw::ProcessFloat() {
     float max_detune_semitones = 1.0f;
     float detune_factor = detune_amount_ * max_detune_semitones;
 
-    for (int i = 0; i < NUM_OSCS; i++) {
+    for (int i = 0; i < voice_count_; i++) {
         // Calculate detuned frequency
         float detune_st = kDetuneRatios[i] * detune_factor;
         float detuned_inc = phase_inc * powf(2.0f, detune_st / 12.0f);
@@ -300,7 +308,7 @@ void SuperSaw::ProcessAuthenticStereo(float& left, float& right) {
     int32_t sum_l = 0;
     int32_t sum_r = 0;
 
-    for (int i = 0; i < NUM_OSCS; i++) {
+    for (int i = 0; i < voice_count_; i++) {
         static constexpr float kMaxDetuneScaled = 0.00529f;
         int32_t pitch_x_detune = static_cast<int32_t>(
             static_cast<float>(pitch_inc_) * detune_amount_ * kMaxDetuneScaled
@@ -353,7 +361,7 @@ void SuperSaw::ProcessFloatStereo(float& left, float& right) {
     float max_detune_semitones = 1.0f;
     float detune_factor = detune_amount_ * max_detune_semitones;
 
-    for (int i = 0; i < NUM_OSCS; i++) {
+    for (int i = 0; i < voice_count_; i++) {
         float detune_st = kDetuneRatios[i] * detune_factor;
         float detuned_inc = phase_inc * powf(2.0f, detune_st / 12.0f);
 

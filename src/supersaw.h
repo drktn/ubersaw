@@ -78,6 +78,9 @@ public:
     /// Set stereo spread amount. 0.0 = mono (L==R), 1.0 = full stereo width.
     void SetSpread(float spread);
 
+    /// Set number of active voices: 1, 3, 5, or 7. Invalid values snap to nearest.
+    void SetVoiceCount(int count);
+
 private:
     // -----------------------------------------------------------------------
     // 24-bit fixed-point helpers
@@ -158,6 +161,9 @@ private:
 
     // Stereo spread
     float spread_ = 0.0f;  // 0=mono, 1=full stereo width
+
+    // Voice count (1, 3, 5, or 7)
+    int voice_count_ = NUM_OSCS;
 
     // Portamento / glide
     float glide_time_ = 0.0f;       // Glide time in seconds (0 = off)

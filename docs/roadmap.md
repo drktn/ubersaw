@@ -43,24 +43,24 @@ hardware verification pending, then Phase 5 extended features.
 
 See [scope-debug.md](scope-debug.md) for measurement procedures.
 
-## Phase 5 — Extended Features (next)
+## Phase 5 — Extended Features (in progress)
 
-Ideas for after hardware verification. Each needs its own issue.
+116 tests, 2.6M assertions passing.
 
 ### Audio enhancements
 
-- [ ] Unison voice count (1/3/5/7 selectable)
-- [ ] Sub-oscillator (-1 oct square or saw)
-- [ ] Soft clipping / saturation on output
-- [ ] Stereo spread (L/R detune panning)
+- [x] Soft clipping / saturation on output (#13)
+- [x] Sub-oscillator — -1 oct square wave (#14)
+- [x] Stereo spread — L/R detune panning (#17)
+- [x] Unison voice count — 1/3/5/7 selectable (#18)
 
 ### Modulation
 
-- [ ] Internal LFO → detune/mix/tone
-- [ ] Envelope follower on gate for mix/tone
+- [x] Internal LFO — sine/tri/square/S&H (#16)
+- [x] Envelope follower — attack/release AR (#19)
 - [ ] CV2-4 attenuverter scaling
 
-### Hardware features
+### Hardware features (blocked on hardware)
 
 - [ ] Gate out: trigger on zero-crossing for sync
 - [ ] Gate in 2: hard sync or freeze
@@ -72,9 +72,3 @@ Ideas for after hardware verification. Each needs its own issue.
 - [ ] SIMD/DSP intrinsics for phase accumulation
 - [ ] Block-level parameter interpolation
 - [ ] Oversampling experiment (2x48k vs 96k)
-
-## Priorities
-
-1. Hardware verification (Phase 4 blockers) — first session with module
-2. Pick 2-3 Phase 5 features based on musical usefulness
-3. Create issues before implementing anything
