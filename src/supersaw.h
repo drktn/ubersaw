@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include "smooth.h"
 
 class SuperSaw {
 public:
@@ -60,6 +61,9 @@ public:
 
     /// Trigger a new note — randomizes all oscillator phases.
     void Trigger();
+
+    /// Set portamento/glide time in seconds. 0 = off (instant), >0 = glide.
+    void SetGlide(float time_sec);
 
     /// Set whether to use authentic 24-bit fixed-point mode (true) or
     /// floating-point mode (false). Default: true.
@@ -132,6 +136,20 @@ private:
     float   freq_hz_ = 440.0f;    // Current frequency for filter tracking
     float   filter_offset_ = 1.0f;// HPF cutoff offset ratio
     bool    authentic_ = true;     // True = 24-bit mode, false = float mode
+
+    // Anti-click parameter smoothers
+    Smooth smooth_detune_;
+    Smooth smooth_mix_;
+    Smooth smooth_filter_offset_;
+    float  target_detune_ = 0.0f;
+    float  target_mix_ = 1.0f;
+    float  target_filter_offset_ = 1.0f;
+
+    // Portamento / glide
+    float glide_time_ = 0.0f;       // Glide time in seconds (0 = off)
+    float current_freq_ = 440.0f;   // Current (gliding) frequency
+    float target_freq_ = 440.0f;    // Target frequency from SetFreq
+    float glide_coeff_ = 0.0f;      // Per-sample exponential smoothing coeff
 
     // High-pass filter
     HighPass hpf_;

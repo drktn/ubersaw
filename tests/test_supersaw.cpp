@@ -992,3 +992,384 @@ TEST_CASE("Aliasing: engine works at 88.2 kHz - float mode") {
     MESSAGE("Float mode RMS @ 88.2 kHz: " << rms);
     CHECK(rms > 0.0);
 }
+
+// ============================================================================
+// Portamento / Glide (#9)
+// ============================================================================
+
+TEST_CASE("Glide: default (0) snaps frequency instantly — authentic") {
+    // With glide=0 (default), SetFreq should change pitch immediately.
+    // Existing behavior must be preserved.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.0f);
+    ss.SetMix(0.0f);
+
+    // Settle HPF
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    // Change to 880 Hz with no glide
+    ss.SetFreq(880.0f);
+
+    // Skip a few samples for HPF settling after freq change
+    for (int i = 0; i < 2000; i++) ss.Process();
+
+    // Measure frequency via zero-crossings over 0.5 second
+    int crossings = 0;
+    float prev = ss.Process();
+    const int N = 48000;
+    for (int i = 0; i < N; i++) {
+        float cur = ss.Process();
+        if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f))
+            crossings++;
+        prev = cur;
+    }
+    float measured = static_cast<float>(crossings) / (2.0f * 0.5f);
+    CHECK(measured == doctest::Approx(880.0f).epsilon(0.02));
+}
+
+TEST_CASE("Glide: default (0) snaps frequency instantly — float mode") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetAuthentic(false);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.0f);
+    ss.SetMix(0.0f);
+
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    ss.SetFreq(880.0f);
+    for (int i = 0; i < 2000; i++) ss.Process();
+
+    int crossings = 0;
+    float prev = ss.Process();
+    const int N = 48000;
+    for (int i = 0; i < N; i++) {
+        float cur = ss.Process();
+        if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f))
+            crossings++;
+        prev = cur;
+    }
+    float measured = static_cast<float>(crossings) / (2.0f * 0.5f);
+    CHECK(measured == doctest::Approx(880.0f).epsilon(0.02));
+}
+
+TEST_CASE("Glide: non-zero glide transitions gradually") {
+    // With glide=0.1s, frequency should not jump to target immediately.
+    // After 10ms (~960 samples at 96kHz), it should still be partway.
+    // After ~0.1s, it should be near the target.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetGlide(0.1f);  // 100ms glide
+    ss.SetFreq(220.0f);
+    ss.SetDetune(0.0f);
+    ss.SetMix(0.0f);
+
+    // Settle at 220 Hz
+    for (int i = 0; i < 10000; i++) ss.Process();
+
+    // Now glide to 440 Hz
+    ss.SetFreq(440.0f);
+
+    // Measure frequency over first 10ms (should be near 220, not 440)
+    auto measureFreqShort = [&](int samples) {
+        int crossings = 0;
+        float prev = ss.Process();
+        for (int i = 0; i < samples - 1; i++) {
+            float cur = ss.Process();
+            if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f))
+                crossings++;
+            prev = cur;
+        }
+        float duration = static_cast<float>(samples) / kSampleRate;
+        return static_cast<float>(crossings) / (2.0f * duration);
+    };
+
+    // First 10ms: frequency should be below target (closer to 220 than 440)
+    float freq_early = measureFreqShort(960);
+    CHECK(freq_early < 400.0f);  // Not at 440 yet
+    CHECK(freq_early > 200.0f);  // Still producing sound
+
+    // Process remaining ~90ms to complete glide
+    for (int i = 0; i < 8640; i++) ss.Process();
+
+    // After glide: should be at target
+    // Measure over 0.5 second
+    int crossings = 0;
+    float prev = ss.Process();
+    const int N = 48000;
+    for (int i = 0; i < N; i++) {
+        float cur = ss.Process();
+        if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f))
+            crossings++;
+        prev = cur;
+    }
+    float freq_final = static_cast<float>(crossings) / (2.0f * 0.5f);
+    CHECK(freq_final == doctest::Approx(440.0f).epsilon(0.02));
+}
+
+TEST_CASE("Glide: monotonic pitch change — no overshoot") {
+    // When gliding up from 220 to 440 Hz, pitch should increase monotonically.
+    // Use 20ms windows for reliable zero-crossing measurement.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetGlide(0.1f);  // 100ms glide
+    ss.SetFreq(220.0f);
+    ss.SetDetune(0.0f);
+    ss.SetMix(0.0f);
+
+    // Settle at 220 Hz
+    for (int i = 0; i < 10000; i++) ss.Process();
+
+    // Glide up to 440 Hz
+    ss.SetFreq(440.0f);
+
+    // Measure frequency in three successive 20ms windows (1920 samples)
+    auto measureWindow = [&](int samples) {
+        int crossings = 0;
+        float prev = ss.Process();
+        for (int i = 0; i < samples - 1; i++) {
+            float cur = ss.Process();
+            if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f))
+                crossings++;
+            prev = cur;
+        }
+        return static_cast<float>(crossings) / (2.0f * static_cast<float>(samples) / kSampleRate);
+    };
+
+    const int kWindow = 1920;  // 20ms
+    float f1 = measureWindow(kWindow);  // 0-20ms
+    float f2 = measureWindow(kWindow);  // 20-40ms
+    float f3 = measureWindow(kWindow);  // 40-60ms
+
+    // Monotonic: each window >= previous (gliding up)
+    CHECK(f2 >= f1);
+    CHECK(f3 >= f2);
+
+    // No overshoot: never above target (with small tolerance)
+    CHECK(f1 <= 440.0f * 1.05f);
+    CHECK(f2 <= 440.0f * 1.05f);
+    CHECK(f3 <= 440.0f * 1.05f);
+
+    // First window should be below target (still gliding)
+    CHECK(f1 < 430.0f);
+}
+
+TEST_CASE("Glide: works in both authentic and float modes") {
+    // Verify glide produces gradual transition in both modes.
+    for (bool authentic : {true, false}) {
+        CAPTURE(authentic);
+        SuperSaw ss;
+        ss.Init(kSampleRate);
+        ss.SetAuthentic(authentic);
+        ss.SetGlide(0.05f);
+        ss.SetFreq(220.0f);
+        ss.SetDetune(0.0f);
+        ss.SetMix(0.0f);
+
+        for (int i = 0; i < 10000; i++) ss.Process();
+
+        ss.SetFreq(440.0f);
+
+        // After 5ms, should still be transitioning (not at 440 yet)
+        for (int i = 0; i < 480; i++) ss.Process();
+
+        // Measure over next 5ms
+        int crossings = 0;
+        float prev = ss.Process();
+        const int kWindow = 480;
+        for (int i = 0; i < kWindow - 1; i++) {
+            float cur = ss.Process();
+            if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f))
+                crossings++;
+            prev = cur;
+        }
+        float freq = static_cast<float>(crossings) / (2.0f * static_cast<float>(kWindow) / kSampleRate);
+        CHECK(freq < 420.0f);  // Not at target yet
+        CHECK(freq > 200.0f);  // Still producing sound
+
+        // Complete the glide and verify final pitch
+        for (int i = 0; i < 20000; i++) ss.Process();
+
+        crossings = 0;
+        prev = ss.Process();
+        const int N = 48000;
+        for (int i = 0; i < N; i++) {
+            float cur = ss.Process();
+            if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f))
+                crossings++;
+            prev = cur;
+        }
+        float final_freq = static_cast<float>(crossings) / (2.0f * 0.5f);
+        CHECK(final_freq == doctest::Approx(440.0f).epsilon(0.02));
+    }
+}
+
+TEST_CASE("Glide: downward glide works correctly") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetGlide(0.05f);
+    ss.SetFreq(880.0f);
+    ss.SetDetune(0.0f);
+    ss.SetMix(0.0f);
+
+    for (int i = 0; i < 10000; i++) ss.Process();
+
+    // Glide down to 440 Hz
+    ss.SetFreq(440.0f);
+
+    // After 5ms, should be partway (still above 440)
+    for (int i = 0; i < 480; i++) ss.Process();
+    int crossings = 0;
+    float prev = ss.Process();
+    const int kWindow = 480;
+    for (int i = 0; i < kWindow - 1; i++) {
+        float cur = ss.Process();
+        if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f))
+            crossings++;
+        prev = cur;
+    }
+    float freq = static_cast<float>(crossings) / (2.0f * static_cast<float>(kWindow) / kSampleRate);
+    CHECK(freq > 460.0f);  // Still above target
+
+    // Complete glide
+    for (int i = 0; i < 20000; i++) ss.Process();
+    crossings = 0;
+    prev = ss.Process();
+    const int N = 48000;
+    for (int i = 0; i < N; i++) {
+        float cur = ss.Process();
+        if ((prev < 0.0f && cur >= 0.0f) || (prev >= 0.0f && cur < 0.0f))
+            crossings++;
+        prev = cur;
+    }
+    float final_freq = static_cast<float>(crossings) / (2.0f * 0.5f);
+    CHECK(final_freq == doctest::Approx(440.0f).epsilon(0.02));
+}
+
+// ============================================================================
+// Anti-click parameter smoothing (#8)
+// ============================================================================
+// Rapid parameter changes should be smoothed to avoid audio discontinuities.
+
+TEST_CASE("Anti-click: abrupt mix change produces smooth level transition") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(0.0f);
+
+    // Stabilize at mix=0 (center osc only)
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    // Measure RMS of first 48 samples after abrupt mix change
+    ss.SetMix(1.0f);
+    double energy_early = 0.0;
+    for (int i = 0; i < 48; i++) {
+        float s = ss.Process();
+        energy_early += s * s;
+    }
+    double rms_early = std::sqrt(energy_early / 48.0);
+
+    // Measure RMS after smoothing converges (~10000 samples)
+    for (int i = 0; i < 9452; i++) ss.Process();
+    double energy_late = 0.0;
+    for (int i = 0; i < 500; i++) {
+        float s = ss.Process();
+        energy_late += s * s;
+    }
+    double rms_late = std::sqrt(energy_late / 500.0);
+
+    // With smoothing, early RMS < late RMS (mix hasn't fully ramped yet)
+    CHECK(rms_early < rms_late);
+}
+
+TEST_CASE("Anti-click: smoothed mix converges to target value") {
+    // After enough samples, smoothed mix should match set value.
+    // Verify by comparing RMS at mix=1 after convergence vs a fresh init at mix=1.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(0.0f);
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    ss.SetMix(1.0f);
+    // Let smoother fully converge
+    for (int i = 0; i < 50000; i++) ss.Process();
+
+    double energy = 0.0;
+    const int N = 48000;
+    for (int i = 0; i < N; i++) {
+        float s = ss.Process();
+        energy += s * s;
+    }
+    double rms_smoothed = std::sqrt(energy / N);
+
+    // Compare with direct init at mix=1
+    SuperSaw ss2;
+    ss2.Init(kSampleRate);
+    ss2.SetFreq(440.0f);
+    ss2.SetDetune(0.5f);
+    ss2.SetMix(1.0f);
+    for (int i = 0; i < 50000; i++) ss2.Process();
+
+    energy = 0.0;
+    for (int i = 0; i < N; i++) {
+        float s = ss2.Process();
+        energy += s * s;
+    }
+    double rms_direct = std::sqrt(energy / N);
+
+    // Should be within 20% after full convergence
+    double ratio = rms_smoothed / rms_direct;
+    CHECK(ratio > 0.8);
+    CHECK(ratio < 1.2);
+}
+
+TEST_CASE("Anti-click: abrupt detune change is gradual") {
+    // With smoothing, jumping detune from 0 to 1 should show gradual
+    // autocorrelation decrease (not instant).
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.0f);
+    ss.SetMix(1.0f);
+
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    // Measure autocorrelation immediately after detune jump
+    ss.SetDetune(1.0f);
+
+    // Collect 48 samples right after the jump
+    const int kShort = 480;
+    std::vector<float> early(kShort);
+    for (int i = 0; i < kShort; i++) early[i] = ss.Process();
+
+    int period = static_cast<int>(kSampleRate / 440.0f);
+    double ac_early = 0.0, e_early = 0.0;
+    for (int i = 0; i < kShort - period; i++) {
+        ac_early += early[i] * early[static_cast<size_t>(i + period)];
+        e_early += early[i] * early[i];
+    }
+    double norm_early = (e_early > 0) ? ac_early / e_early : 0.0;
+
+    // Let smoother converge
+    for (int i = 0; i < 50000; i++) ss.Process();
+
+    // Measure autocorrelation after convergence
+    const int kLong = 48000;
+    std::vector<float> late(kLong);
+    for (int i = 0; i < kLong; i++) late[i] = ss.Process();
+
+    double ac_late = 0.0, e_late = 0.0;
+    for (int i = 0; i < kLong - period; i++) {
+        ac_late += late[i] * late[static_cast<size_t>(i + period)];
+        e_late += late[i] * late[i];
+    }
+    double norm_late = (e_late > 0) ? ac_late / e_late : 0.0;
+
+    // Early autocorrelation should be higher (detune not fully applied yet)
+    CHECK(norm_early > norm_late);
+}

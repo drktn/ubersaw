@@ -24,11 +24,28 @@ void SuperSaw::Init(float sample_rate) {
         saw_f_[i] = 0.0f;
     }
 
+    // Initialize glide (off by default)
+    glide_time_ = 0.0f;
+    glide_coeff_ = 0.0f;
+    current_freq_ = 440.0f;
+    target_freq_ = 440.0f;
+
+    // Initialize anti-click parameter smoothers
+    static constexpr float kParamSmooth = 0.99f;
+    smooth_detune_.Init(kParamSmooth);
+    smooth_mix_.Init(kParamSmooth);
+    smooth_filter_offset_.Init(kParamSmooth);
+
     // Default parameters
     SetFreq(440.0f);
     SetDetune(0.5f);
     SetMix(1.0f);
     SetFilterOffset(1.0f);
+
+    // Force smoothers to initial values (no ramp on startup)
+    smooth_detune_.SetValue(target_detune_);
+    smooth_mix_.SetValue(target_mix_);
+    smooth_filter_offset_.SetValue(target_filter_offset_);
 
     // Initialize HPF
     hpf_.Reset();
@@ -40,11 +57,29 @@ void SuperSaw::Init(float sample_rate) {
 // ============================================================================
 
 void SuperSaw::SetFreq(float freq_hz) {
-    freq_hz_ = freq_hz;
-    pitch_inc_ = FreqToPhaseInc(freq_hz);
+    target_freq_ = freq_hz;
 
-    // Update pitch-tracked HPF: cutoff follows the fundamental
+    if (glide_time_ <= 0.0f) {
+        // No glide: snap instantly (preserves existing behavior)
+        current_freq_ = freq_hz;
+    }
+    // When gliding, current_freq_ moves toward target_freq_ each sample in Process()
+
+    freq_hz_ = current_freq_;
+    pitch_inc_ = FreqToPhaseInc(current_freq_);
     hpf_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
+}
+
+void SuperSaw::SetGlide(float time_sec) {
+    glide_time_ = time_sec;
+    if (time_sec > 0.0f) {
+        // Exponential smoothing: reach ~99.3% of target in glide_time.
+        // coeff = 1 - exp(-5 / (time * sr))
+        // Factor of 5 gives ~99.3% convergence (5 time constants).
+        glide_coeff_ = 1.0f - expf(-5.0f / (time_sec * sample_rate_));
+    } else {
+        glide_coeff_ = 0.0f;
+    }
 }
 
 void SuperSaw::SetDetune(float detune) {
@@ -73,17 +108,16 @@ void SuperSaw::SetDetune(float detune) {
                      + 0.6717417634f) * x
                      + 0.0030115596f;
 
-    detune_amount_ = shaped;
+    target_detune_ = shaped;
 }
 
 void SuperSaw::SetMix(float mix) {
     // 0.0 = center oscillator only, 1.0 = full side oscillator volume
-    mix_ = mix;
+    target_mix_ = mix;
 }
 
 void SuperSaw::SetFilterOffset(float offset) {
-    filter_offset_ = offset;
-    hpf_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
+    target_filter_offset_ = offset;
 }
 
 void SuperSaw::SetAuthentic(bool authentic) {
@@ -106,6 +140,22 @@ void SuperSaw::Trigger() {
 // ============================================================================
 
 float SuperSaw::Process() {
+    // Update glide: move current_freq_ toward target_freq_
+    if (glide_time_ > 0.0f && current_freq_ != target_freq_) {
+        current_freq_ += (target_freq_ - current_freq_) * glide_coeff_;
+        // Snap when close enough to avoid infinite asymptote
+        if (std::fabs(current_freq_ - target_freq_) < 0.01f)
+            current_freq_ = target_freq_;
+        freq_hz_ = current_freq_;
+        pitch_inc_ = FreqToPhaseInc(current_freq_);
+    }
+
+    // Anti-click: smooth detune, mix, and filter_offset per sample
+    detune_amount_ = smooth_detune_.Process(target_detune_);
+    mix_ = smooth_mix_.Process(target_mix_);
+    filter_offset_ = smooth_filter_offset_.Process(target_filter_offset_);
+    hpf_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
+
     float raw = authentic_ ? ProcessAuthentic() : ProcessFloat();
 
     // Apply pitch-tracked high-pass filter.
