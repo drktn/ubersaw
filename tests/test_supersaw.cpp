@@ -484,3 +484,150 @@ TEST_CASE("Full detune maintains periodicity - float mode") {
     double normalized = autocorr / energy;
     CHECK(normalized > 0.1);
 }
+
+// ============================================================================
+// A/B comparison: Authentic vs Float mode characterization
+// ============================================================================
+// These tests quantify differences between ProcessAuthentic() and ProcessFloat().
+// This is characterization — documenting differences, not fixing them.
+// Both modes should produce valid audio at the correct pitch.
+
+// Helper: collect N samples from a SuperSaw configured at given settings
+static std::vector<float> collectSamples(bool authentic, float freq, float detune,
+                                          float mix, int settle, int count) {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(freq);
+    ss.SetDetune(detune);
+    ss.SetMix(mix);
+    ss.SetAuthentic(authentic);
+    ss.Trigger();
+    for (int i = 0; i < settle; i++) ss.Process();
+    std::vector<float> out(count);
+    for (int i = 0; i < count; i++) out[i] = ss.Process();
+    return out;
+}
+
+TEST_CASE("A/B: RMS output levels at same settings") {
+    // Both modes at 440Hz, detune=0.5, mix=1.0 should produce nonzero RMS.
+    // Document the RMS ratio between modes.
+    const int N = 96000;
+    auto auth = collectSamples(true,  440.0f, 0.5f, 1.0f, 4000, N);
+    auto flt  = collectSamples(false, 440.0f, 0.5f, 1.0f, 4000, N);
+
+    double energy_auth = 0.0, energy_flt = 0.0;
+    for (int i = 0; i < N; i++) {
+        energy_auth += auth[i] * auth[i];
+        energy_flt  += flt[i]  * flt[i];
+    }
+    double rms_auth = std::sqrt(energy_auth / N);
+    double rms_flt  = std::sqrt(energy_flt  / N);
+
+    // Both produce audible signal
+    CHECK(rms_auth > 0.01);
+    CHECK(rms_flt  > 0.01);
+
+    // Both in reasonable range (neither clips, neither silent)
+    CHECK(rms_auth < 1.0);
+    CHECK(rms_flt  < 1.0);
+
+    // Document ratio — authentic uses 0.3f scaler, float uses 0.15f,
+    // so authentic is expected louder. Allow wide range since this is
+    // characterization.
+    double ratio = rms_auth / rms_flt;
+    CHECK(ratio > 0.5);
+    CHECK(ratio < 10.0);
+    MESSAGE("A/B RMS: authentic=" << rms_auth << " float=" << rms_flt
+            << " ratio=" << ratio);
+}
+
+TEST_CASE("A/B: DC offset (mean) between modes") {
+    // HPF should remove DC in both modes. Measure residual DC as
+    // fraction of RMS to characterize any mode-specific bias.
+    const int N = 96000;
+    auto auth = collectSamples(true,  440.0f, 0.5f, 1.0f, 4000, N);
+    auto flt  = collectSamples(false, 440.0f, 0.5f, 1.0f, 4000, N);
+
+    auto dcAndRms = [](const std::vector<float>& s) {
+        double sum = 0.0, energy = 0.0;
+        for (float v : s) { sum += v; energy += v * v; }
+        double mean = sum / s.size();
+        double rms  = std::sqrt(energy / s.size());
+        return std::make_pair(mean, rms);
+    };
+
+    auto auth_dc = dcAndRms(auth);
+    auto flt_dc  = dcAndRms(flt);
+    double mean_auth = auth_dc.first, rms_auth = auth_dc.second;
+    double mean_flt  = flt_dc.first,  rms_flt  = flt_dc.second;
+
+    // DC should be negligible relative to RMS in both modes
+    CHECK(std::fabs(mean_auth) < rms_auth * 0.1);
+    CHECK(std::fabs(mean_flt)  < rms_flt  * 0.1);
+
+    MESSAGE("A/B DC: auth_mean=" << mean_auth << " auth_rms=" << rms_auth
+            << " flt_mean=" << mean_flt << " flt_rms=" << rms_flt);
+}
+
+TEST_CASE("A/B: output range (min/max peak) between modes") {
+    // Measure peak-to-peak in both modes. Both should stay within [-1, 1]
+    // after HPF. Document the headroom difference.
+    const int N = 96000;
+    auto auth = collectSamples(true,  440.0f, 0.5f, 1.0f, 4000, N);
+    auto flt  = collectSamples(false, 440.0f, 0.5f, 1.0f, 4000, N);
+
+    auto minMax = [](const std::vector<float>& s) {
+        float mn = s[0], mx = s[0];
+        for (float v : s) { mn = std::min(mn, v); mx = std::max(mx, v); }
+        return std::make_pair(mn, mx);
+    };
+
+    auto auth_mm = minMax(auth);
+    auto flt_mm  = minMax(flt);
+    float min_auth = auth_mm.first, max_auth = auth_mm.second;
+    float min_flt  = flt_mm.first,  max_flt  = flt_mm.second;
+
+    // Neither mode should clip beyond [-1, 1]
+    CHECK(min_auth >= -1.0f);
+    CHECK(max_auth <=  1.0f);
+    CHECK(min_flt  >= -1.0f);
+    CHECK(max_flt  <=  1.0f);
+
+    // Both produce meaningful signal (non-trivial peak-to-peak)
+    float pp_auth = max_auth - min_auth;
+    float pp_flt  = max_flt  - min_flt;
+    CHECK(pp_auth > 0.05f);
+    CHECK(pp_flt  > 0.05f);
+
+    MESSAGE("A/B peak: auth=[" << min_auth << "," << max_auth << "] pp=" << pp_auth
+            << " flt=[" << min_flt << "," << max_flt << "] pp=" << pp_flt);
+}
+
+TEST_CASE("A/B: zero-crossing frequency (pitch) between modes") {
+    // Both modes should produce the same fundamental pitch (440 Hz).
+    // detune=0, mix=0 -> center osc only for clean pitch measurement.
+    const int N = 96000;
+    auto auth = collectSamples(true,  440.0f, 0.0f, 0.0f, 4000, N);
+    auto flt  = collectSamples(false, 440.0f, 0.0f, 0.0f, 4000, N);
+
+    auto countFreq = [](const std::vector<float>& s) {
+        int crossings = 0;
+        for (size_t i = 1; i < s.size(); i++) {
+            if ((s[i-1] < 0.0f && s[i] >= 0.0f) || (s[i-1] >= 0.0f && s[i] < 0.0f))
+                crossings++;
+        }
+        return static_cast<float>(crossings) / 2.0f;
+    };
+
+    float freq_auth = countFreq(auth);
+    float freq_flt  = countFreq(flt);
+
+    // Both should measure ~440 Hz (2% tolerance)
+    CHECK(freq_auth == doctest::Approx(440.0f).epsilon(0.02));
+    CHECK(freq_flt  == doctest::Approx(440.0f).epsilon(0.02));
+
+    // Modes should agree on pitch within 1%
+    CHECK(freq_auth == doctest::Approx(freq_flt).epsilon(0.01));
+
+    MESSAGE("A/B freq: auth=" << freq_auth << " Hz, flt=" << freq_flt << " Hz");
+}
