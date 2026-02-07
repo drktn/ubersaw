@@ -50,11 +50,15 @@ void SuperSaw::Init(float sample_rate) {
     smooth_filter_offset_.SetValue(target_filter_offset_);
     smooth_spread_.SetValue(target_spread_);
 
-    // Initialize HPFs
+    // Initialize HPFs (float + fixed-point)
     hpf_.Reset();
     hpf_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
     hpf_r_.Reset();
     hpf_r_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
+    hpf24_.Reset();
+    hpf24_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
+    hpf24_r_.Reset();
+    hpf24_r_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
 }
 
 // ============================================================================
@@ -133,6 +137,10 @@ void SuperSaw::SetSpread(float spread) {
     target_spread_ = spread;
 }
 
+void SuperSaw::SetFixedPointHpf(bool enabled) {
+    fixed_point_hpf_ = enabled;
+}
+
 void SuperSaw::SetVoiceCount(int count) {
     // Snap to nearest valid: 1, 3, 5, 7
     if (count <= 2)      voice_count_ = 1;
@@ -150,6 +158,7 @@ void SuperSaw::Trigger() {
         saw_f_[i] = static_cast<float>(Rng()) / static_cast<float>(UINT32_MAX) * 2.0f - 1.0f;
     }
     hpf_.Reset();
+    hpf24_.Reset();
 }
 
 // ============================================================================
@@ -175,61 +184,103 @@ void SuperSaw::UpdateParams() {
     float hpf_freq = freq_hz_ * filter_offset_;
     hpf_.SetFreq(hpf_freq, sample_rate_);
     hpf_r_.SetFreq(hpf_freq, sample_rate_);
+    hpf24_.SetFreq(hpf_freq, sample_rate_);
+    hpf24_r_.SetFreq(hpf_freq, sample_rate_);
 }
 
 float SuperSaw::Process() {
     UpdateParams();
 
-    float raw = authentic_ ? ProcessAuthentic() : ProcessFloat();
-
-    // Apply pitch-tracked high-pass filter.
-    // This removes sub-fundamental aliased harmonics that sound harsh,
-    // while preserving the above-fundamental aliasing that adds brightness.
-    return hpf_.Process(raw);
+    if (authentic_) {
+        int32_t raw = ProcessAuthentic();
+        if (fixed_point_hpf_) {
+            int32_t filtered = hpf24_.Process(raw);
+            return Int24ToFloat(filtered) * 0.3f;
+        } else {
+            return hpf_.Process(Int24ToFloat(raw) * 0.3f);
+        }
+    } else {
+        float raw = ProcessFloat();
+        return hpf_.Process(raw);
+    }
 }
 
 void SuperSaw::ProcessStereo(float& left, float& right) {
     UpdateParams();
 
     if (authentic_) {
-        ProcessAuthenticStereo(left, right);
+        int32_t l24, r24;
+        ProcessAuthenticStereo(l24, r24);
+        if (fixed_point_hpf_) {
+            l24 = hpf24_.Process(l24);
+            r24 = hpf24_r_.Process(r24);
+            left  = Int24ToFloat(l24) * 0.3f;
+            right = Int24ToFloat(r24) * 0.3f;
+        } else {
+            left  = hpf_.Process(Int24ToFloat(l24) * 0.3f);
+            right = hpf_r_.Process(Int24ToFloat(r24) * 0.3f);
+        }
     } else {
         ProcessFloatStereo(left, right);
+        left  = hpf_.Process(left);
+        right = hpf_r_.Process(right);
     }
-
-    left = hpf_.Process(left);
-    right = hpf_r_.Process(right);
 }
 
 void SuperSaw::ProcessBlock(float* out, size_t n) {
     UpdateParams();
-    for (size_t i = 0; i < n; i++) {
-        float raw = authentic_ ? ProcessAuthentic() : ProcessFloat();
-        out[i] = hpf_.Process(raw);
+    if (authentic_) {
+        for (size_t i = 0; i < n; i++) {
+            int32_t raw = ProcessAuthentic();
+            if (fixed_point_hpf_) {
+                int32_t filtered = hpf24_.Process(raw);
+                out[i] = Int24ToFloat(filtered) * 0.3f;
+            } else {
+                out[i] = hpf_.Process(Int24ToFloat(raw) * 0.3f);
+            }
+        }
+    } else {
+        for (size_t i = 0; i < n; i++) {
+            float raw = ProcessFloat();
+            out[i] = hpf_.Process(raw);
+        }
     }
 }
 
 void SuperSaw::ProcessBlockStereo(float* left, float* right, size_t n) {
     UpdateParams();
-    for (size_t i = 0; i < n; i++) {
-        float l, r;
-        if (authentic_) {
-            ProcessAuthenticStereo(l, r);
-        } else {
-            ProcessFloatStereo(l, r);
+    if (authentic_) {
+        for (size_t i = 0; i < n; i++) {
+            int32_t l24, r24;
+            ProcessAuthenticStereo(l24, r24);
+            if (fixed_point_hpf_) {
+                l24 = hpf24_.Process(l24);
+                r24 = hpf24_r_.Process(r24);
+                left[i]  = Int24ToFloat(l24) * 0.3f;
+                right[i] = Int24ToFloat(r24) * 0.3f;
+            } else {
+                left[i]  = hpf_.Process(Int24ToFloat(l24) * 0.3f);
+                right[i] = hpf_r_.Process(Int24ToFloat(r24) * 0.3f);
+            }
         }
-        left[i] = hpf_.Process(l);
-        right[i] = hpf_r_.Process(r);
+    } else {
+        for (size_t i = 0; i < n; i++) {
+            float l, r;
+            ProcessFloatStereo(l, r);
+            left[i]  = hpf_.Process(l);
+            right[i] = hpf_r_.Process(r);
+        }
     }
 }
 
-float SuperSaw::ProcessAuthentic() {
+int32_t SuperSaw::ProcessAuthentic() {
     // ====================================================================
     // AUTHENTIC JP-8000 ALGORITHM — 24-bit fixed-point
     // ====================================================================
     // This matches the reverse-engineered TC170C140 ESP2 firmware.
     // All arithmetic wraps at 24 bits, emulating the original hardware's
     // natural integer overflow behavior.
+    // Returns raw 24-bit sum (caller applies HPF + normalization).
     // ====================================================================
 
     int32_t sum = 0;
@@ -268,9 +319,7 @@ float SuperSaw::ProcessAuthentic() {
         }
     }
 
-    // Normalize 24-bit sum to float [-1, 1]
-    // Scale down to prevent clipping (7 oscillators summed)
-    return Int24ToFloat(sum) * 0.3f;
+    return sum;
 }
 
 float SuperSaw::ProcessFloat() {
@@ -321,11 +370,10 @@ float SuperSaw::ProcessFloat() {
     return sum * 0.15f;
 }
 
-void SuperSaw::ProcessAuthenticStereo(float& left, float& right) {
+void SuperSaw::ProcessAuthenticStereo(int32_t& left, int32_t& right) {
     // Same oscillator advancement as ProcessAuthentic, but accumulates
     // into separate L/R sums based on detune direction and spread.
-    // Positive-detune oscs (i=1,3,5) pan right, negative (i=2,4,6) pan left.
-    // Center osc (i=0) is equal in both channels.
+    // Returns raw 24-bit sums; caller applies HPF + normalization.
 
     int32_t sum_l = 0;
     int32_t sum_r = 0;
@@ -341,16 +389,12 @@ void SuperSaw::ProcessAuthenticStereo(float& left, float& right) {
         saw_[i] = Wrap24(saw_[i] + pitch_inc_ + voice_detune);
 
         if (i == 0) {
-            // Center osc: equal in both channels
             sum_l = Wrap24(sum_l + saw_[i]);
             sum_r = Wrap24(sum_r + saw_[i]);
         } else {
             int32_t scaled = static_cast<int32_t>(
                 static_cast<float>(saw_[i]) * mix_ * mix_
             );
-            // Pan based on detune direction:
-            // Odd indices (1,3,5) have positive detune -> pan right
-            // Even indices (2,4,6) have negative detune -> pan left
             float pan_r = 0.5f + (i % 2 == 1 ? spread_ * 0.5f : -spread_ * 0.5f);
             float pan_l = 1.0f - pan_r;
             sum_l = Wrap24(sum_l + static_cast<int32_t>(static_cast<float>(scaled) * pan_l * 2.0f));
@@ -358,8 +402,8 @@ void SuperSaw::ProcessAuthenticStereo(float& left, float& right) {
         }
     }
 
-    left  = Int24ToFloat(sum_l) * 0.3f;
-    right = Int24ToFloat(sum_r) * 0.3f;
+    left  = sum_l;
+    right = sum_r;
 }
 
 void SuperSaw::ProcessFloatStereo(float& left, float& right) {

@@ -70,6 +70,10 @@ public:
     /// floating-point mode (false). Default: true.
     void SetAuthentic(bool authentic);
 
+    /// Enable 24-bit fixed-point HPF in authentic mode (matches ESP2).
+    /// Default: false (uses float HPF for backwards compatibility).
+    void SetFixedPointHpf(bool enabled);
+
     /// Process a block of N samples. Updates params once per block.
     void ProcessBlock(float* out, size_t n);
 
@@ -107,6 +111,14 @@ private:
         return Wrap24(static_cast<int64_t>(a) * b);
     }
 
+    /// Fractional multiply matching DSP56300 MPY instruction.
+    /// Both operands are Q1.23 (range [-1, +1)). Product right-shifted
+    /// by 23 to maintain Q23 format, then wrapped to 24 bits.
+    static inline int32_t Mul24Frac(int32_t a, int32_t b) {
+        int64_t prod = static_cast<int64_t>(a) * b;
+        return Wrap24(static_cast<int32_t>(prod >> 23));
+    }
+
     /// Convert a 24-bit signed integer to a normalized float [-1, 1].
     static inline float Int24ToFloat(int32_t val) {
         return static_cast<float>(val) / static_cast<float>(INT24_MAX);
@@ -134,6 +146,37 @@ private:
         float coeff = 0.999f;  // Filter coefficient (close to 1 = low cutoff)
     };
 
+    // 24-bit fixed-point one-pole HPF matching TC170C140 ESP2 arithmetic.
+    // Uses Q1.23 fractional format with Mul24Frac for coefficient multiply.
+    struct HighPass24 {
+        int32_t y1 = 0;   // Previous output (Q23)
+        int32_t x1 = 0;   // Previous input (Q23)
+        int32_t coeff = INT24_MAX;  // Q23 coefficient (INT24_MAX ≈ 1.0)
+
+        void Reset() { y1 = 0; x1 = 0; }
+
+        void SetFreq(float freq_hz, float sr) {
+            if (freq_hz < 1.0f) freq_hz = 1.0f;
+            if (freq_hz > sr * 0.45f) freq_hz = sr * 0.45f;
+            float rc = 1.0f / (6.28318530f * freq_hz);
+            float dt = 1.0f / sr;
+            float alpha = rc / (rc + dt);
+            coeff = static_cast<int32_t>(alpha * static_cast<float>(INT24_MAX));
+        }
+
+        // y[n] = alpha * (y[n-1] + x[n] - x[n-1])
+        // No Wrap24 on intermediates — ESP2 uses 56-bit accumulators.
+        // Only the multiply result (via Mul24Frac) truncates to 24 bits.
+        int32_t Process(int32_t input) {
+            int32_t diff = input - x1;
+            int32_t sum  = y1 + diff;
+            int32_t out  = Mul24Frac(coeff, sum);
+            x1 = input;
+            y1 = out;
+            return out;
+        }
+    };
+
     // -----------------------------------------------------------------------
     // State
     // -----------------------------------------------------------------------
@@ -155,6 +198,7 @@ private:
     float   freq_hz_ = 440.0f;    // Current frequency for filter tracking
     float   filter_offset_ = 1.0f;// HPF cutoff offset ratio
     bool    authentic_ = true;     // True = 24-bit mode, false = float mode
+    bool    fixed_point_hpf_ = false; // True = 24-bit HPF in authentic mode
 
     // Anti-click parameter smoothers
     Smooth smooth_detune_;
@@ -181,6 +225,8 @@ private:
     // High-pass filter (stereo needs two independent HPF instances)
     HighPass hpf_;
     HighPass hpf_r_;  // Right channel HPF for stereo
+    HighPass24 hpf24_;     // Fixed-point HPF for authentic mode
+    HighPass24 hpf24_r_;   // Fixed-point right channel for authentic stereo
 
     // Random number state (for phase randomization)
     uint32_t rng_state_ = 0x12345678;
@@ -193,14 +239,16 @@ private:
     /// Update glide, smoothers, HPF — shared by Process() and ProcessStereo()
     void UpdateParams();
 
-    /// Authentic 24-bit fixed-point processing (matches original hardware)
-    float ProcessAuthentic();
+    /// Authentic 24-bit fixed-point processing (matches original hardware).
+    /// Returns raw 24-bit sum; caller applies HPF and normalization.
+    int32_t ProcessAuthentic();
 
     /// Floating-point processing (modern, clean alternative)
     float ProcessFloat();
 
-    /// Stereo authentic: accumulate L/R sums with per-osc panning
-    void ProcessAuthenticStereo(float& left, float& right);
+    /// Stereo authentic: accumulate L/R sums with per-osc panning.
+    /// Returns raw 24-bit sums; caller applies HPF and normalization.
+    void ProcessAuthenticStereo(int32_t& left, int32_t& right);
 
     /// Stereo float: accumulate L/R sums with per-osc panning
     void ProcessFloatStereo(float& left, float& right);

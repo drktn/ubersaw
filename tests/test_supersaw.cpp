@@ -2168,3 +2168,112 @@ TEST_CASE("Oversampling: 2x48k decimated vs native 48k at 4 kHz") {
     CHECK(std::isfinite(ac_native));
     CHECK(std::isfinite(ac_decimated));
 }
+
+// ============================================================================
+// Fixed-point HPF tests (#22)
+// ============================================================================
+
+TEST_CASE("Fixed-point HPF: authentic output bounded [-1, 1]") {
+    SuperSaw ss;
+    ss.Init(96000.0f);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(1.0f);
+    ss.SetMix(1.0f);
+    ss.SetAuthentic(true);
+    ss.SetFixedPointHpf(true);
+
+    for (int i = 0; i < 4096; i++) {
+        float s = ss.Process();
+        CHECK(s >= -1.0f);
+        CHECK(s <= 1.0f);
+    }
+}
+
+TEST_CASE("Fixed-point HPF: removes DC from authentic mode") {
+    SuperSaw ss;
+    ss.Init(96000.0f);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+    ss.SetAuthentic(true);
+    ss.SetFixedPointHpf(true);
+
+    // Warm up
+    for (int i = 0; i < 2000; i++) ss.Process();
+
+    // Measure DC (mean)
+    double sum = 0.0;
+    const int N = 8192;
+    for (int i = 0; i < N; i++) {
+        sum += ss.Process();
+    }
+    double mean = sum / N;
+
+    // HPF should remove DC — mean near zero (fixed-point has lower precision)
+    CHECK(std::fabs(mean) < 0.05);
+}
+
+TEST_CASE("Fixed-point HPF: comparable RMS to float HPF") {
+    // Same engine params, compare fixed-point HPF vs float HPF output.
+    SuperSaw fp, fl;
+    fp.Init(96000.0f);
+    fl.Init(96000.0f);
+
+    float freq = 440.0f;
+    fp.SetFreq(freq); fl.SetFreq(freq);
+    fp.SetDetune(0.5f); fl.SetDetune(0.5f);
+    fp.SetMix(1.0f); fl.SetMix(1.0f);
+    fp.SetAuthentic(true); fl.SetAuthentic(true);
+    fp.SetFixedPointHpf(true); fl.SetFixedPointHpf(false);
+
+    // Warm up both
+    for (int i = 0; i < 2000; i++) { fp.Process(); fl.Process(); }
+
+    double rms_fp = 0.0, rms_fl = 0.0;
+    const int N = 8192;
+    for (int i = 0; i < N; i++) {
+        float a = fp.Process();
+        float f = fl.Process();
+        rms_fp += a * a;
+        rms_fl += f * f;
+    }
+    rms_fp = std::sqrt(rms_fp / N);
+    rms_fl = std::sqrt(rms_fl / N);
+
+    MESSAGE("Fixed-pt HPF RMS: fp24=" << rms_fp << " float=" << rms_fl);
+
+    CHECK(rms_fp > 0.01);
+    CHECK(rms_fl > 0.01);
+    double ratio = rms_fp / rms_fl;
+    CHECK(ratio > 0.3);
+    CHECK(ratio < 3.0);
+}
+
+TEST_CASE("Fixed-point HPF: pitch tracking works at multiple frequencies") {
+    float freqs[] = {110.0f, 440.0f, 1760.0f, 4000.0f};
+    for (float freq : freqs) {
+        SuperSaw ss;
+        ss.Init(96000.0f);
+        ss.SetFreq(freq);
+        ss.SetDetune(0.0f);
+        ss.SetMix(0.0f);
+        ss.SetAuthentic(true);
+        ss.SetFixedPointHpf(true);
+
+        // Warm up
+        for (int i = 0; i < 2000; i++) ss.Process();
+
+        // Check output is non-zero (HPF not killing signal) and bounded
+        double rms = 0.0;
+        const int N = 4096;
+        for (int i = 0; i < N; i++) {
+            float s = ss.Process();
+            rms += s * s;
+            CHECK(s >= -1.0f);
+            CHECK(s <= 1.0f);
+        }
+        rms = std::sqrt(rms / N);
+        MESSAGE("Fixed-pt HPF @ " << freq << " Hz: RMS=" << rms);
+        CHECK(rms > 0.001f);
+    }
+}
