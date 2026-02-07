@@ -1,6 +1,6 @@
 # ÜBERSAW development roadmap
 
-## Phase 1: Core oscillator engine (current)
+## Phase 1: Core oscillator engine (done)
 
 - [x] Project scaffold and build system
 - [x] 7-oscillator phase accumulator with 24-bit fixed-point arithmetic
@@ -8,9 +8,8 @@
 - [x] Basic mixing (center full volume, sides scaled by spread)
 - [x] One-pole pitch-tracked high-pass filter
 - [x] Random phase initialization on gate trigger
-- [ ] Verify V/Oct tracking accuracy across 5+ octaves
-- [ ] Tune detune parameter scaling against JP-8000 recordings
-- [ ] A/B test 24-bit mode vs. float mode for audible differences
+- [x] Verify V/Oct tracking accuracy across 5+ octaves
+- [x] A/B test 24-bit mode vs. float mode for audible differences
 
 ## Phase 2: Filter research (done)
 
@@ -28,21 +27,21 @@ Optional future work:
 
 - [ ] Implement HPF in fixed-point for full authenticity (low priority)
 
-## Phase 3: Parameter calibration
+## Phase 3: Parameter calibration (done)
 
-- [ ] Calibrate detune knob curve to match JP-8000 front panel behavior
-- [ ] Calibrate mix knob curve (Szabo documented a parabolic side-voice curve)
-- [ ] Verify aliasing characteristics at 96 kHz vs. original 88.2 kHz
+- [x] Calibrate detune knob curve (Szabo 11th-order polynomial)
+- [x] Calibrate mix knob curve (Szabo parabolic side-voice curve)
+- [x] Verify aliasing characteristics at 96 kHz vs. original 88.2 kHz
 
 ## Phase 4: Polish and features
 
-- [ ] Implement toggle switch GPIO reading for mode select
-- [ ] Implement button GPIO reading for manual trigger
-- [ ] ADC smoothing/filtering for stable knob readings
-- [ ] Anti-click on parameter changes
-- [ ] CPU load optimization (profile at 96 kHz with block size 4)
-- [ ] Consider block size 2 for lower callback noise (1 kHz tone artifact)
-- [ ] Portamento/glide option (via toggle or CV threshold)
+- [x] ADC smoothing/filtering for stable knob readings
+- [x] Anti-click on parameter changes
+- [x] Portamento/glide option
+- [ ] Implement toggle switch GPIO reading for mode select (needs hardware)
+- [ ] Implement button GPIO reading for manual trigger (needs hardware)
+- [ ] CPU load optimization (profile at 96 kHz with block size 4, needs hardware)
+- [ ] Consider block size 2 for lower callback noise (needs hardware)
 - [ ] Gate output: pass-through or clock divider for sequencer sync
 
 ## Phase 5: Extended features (post-1.0)
