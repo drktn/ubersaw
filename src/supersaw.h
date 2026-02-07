@@ -69,6 +69,15 @@ public:
     /// floating-point mode (false). Default: true.
     void SetAuthentic(bool authentic);
 
+    /// Process one stereo audio sample pair. Pans detuned oscillators:
+    /// center osc equal L/R, positive-detune oscs pan right, negative left.
+    /// @param left   Output: left channel sample
+    /// @param right  Output: right channel sample
+    void ProcessStereo(float& left, float& right);
+
+    /// Set stereo spread amount. 0.0 = mono (L==R), 1.0 = full stereo width.
+    void SetSpread(float spread);
+
 private:
     // -----------------------------------------------------------------------
     // 24-bit fixed-point helpers
@@ -141,9 +150,14 @@ private:
     Smooth smooth_detune_;
     Smooth smooth_mix_;
     Smooth smooth_filter_offset_;
+    Smooth smooth_spread_;
     float  target_detune_ = 0.0f;
     float  target_mix_ = 1.0f;
     float  target_filter_offset_ = 1.0f;
+    float  target_spread_ = 0.0f;
+
+    // Stereo spread
+    float spread_ = 0.0f;  // 0=mono, 1=full stereo width
 
     // Portamento / glide
     float glide_time_ = 0.0f;       // Glide time in seconds (0 = off)
@@ -151,8 +165,9 @@ private:
     float target_freq_ = 440.0f;    // Target frequency from SetFreq
     float glide_coeff_ = 0.0f;      // Per-sample exponential smoothing coeff
 
-    // High-pass filter
+    // High-pass filter (stereo needs two independent HPF instances)
     HighPass hpf_;
+    HighPass hpf_r_;  // Right channel HPF for stereo
 
     // Random number state (for phase randomization)
     uint32_t rng_state_ = 0x12345678;
@@ -162,11 +177,20 @@ private:
     // Internal processing paths
     // -----------------------------------------------------------------------
 
+    /// Update glide, smoothers, HPF — shared by Process() and ProcessStereo()
+    void UpdateParams();
+
     /// Authentic 24-bit fixed-point processing (matches original hardware)
     float ProcessAuthentic();
 
     /// Floating-point processing (modern, clean alternative)
     float ProcessFloat();
+
+    /// Stereo authentic: accumulate L/R sums with per-osc panning
+    void ProcessAuthenticStereo(float& left, float& right);
+
+    /// Stereo float: accumulate L/R sums with per-osc panning
+    void ProcessFloatStereo(float& left, float& right);
 
     // Floating-point oscillator state (used in float mode)
     float saw_f_[NUM_OSCS] = {};

@@ -35,21 +35,26 @@ void SuperSaw::Init(float sample_rate) {
     smooth_detune_.Init(kParamSmooth);
     smooth_mix_.Init(kParamSmooth);
     smooth_filter_offset_.Init(kParamSmooth);
+    smooth_spread_.Init(kParamSmooth);
 
     // Default parameters
     SetFreq(440.0f);
     SetDetune(0.5f);
     SetMix(1.0f);
     SetFilterOffset(1.0f);
+    SetSpread(0.0f);
 
     // Force smoothers to initial values (no ramp on startup)
     smooth_detune_.SetValue(target_detune_);
     smooth_mix_.SetValue(target_mix_);
     smooth_filter_offset_.SetValue(target_filter_offset_);
+    smooth_spread_.SetValue(target_spread_);
 
-    // Initialize HPF
+    // Initialize HPFs
     hpf_.Reset();
     hpf_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
+    hpf_r_.Reset();
+    hpf_r_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
 }
 
 // ============================================================================
@@ -124,6 +129,10 @@ void SuperSaw::SetAuthentic(bool authentic) {
     authentic_ = authentic;
 }
 
+void SuperSaw::SetSpread(float spread) {
+    target_spread_ = spread;
+}
+
 void SuperSaw::Trigger() {
     // Randomize all oscillator phases — matches JP-8000 note-on behavior.
     // Each note press produces slightly different timbral character due
@@ -139,7 +148,7 @@ void SuperSaw::Trigger() {
 // Processing
 // ============================================================================
 
-float SuperSaw::Process() {
+void SuperSaw::UpdateParams() {
     // Update glide: move current_freq_ toward target_freq_
     if (glide_time_ > 0.0f && current_freq_ != target_freq_) {
         current_freq_ += (target_freq_ - current_freq_) * glide_coeff_;
@@ -150,11 +159,18 @@ float SuperSaw::Process() {
         pitch_inc_ = FreqToPhaseInc(current_freq_);
     }
 
-    // Anti-click: smooth detune, mix, and filter_offset per sample
+    // Anti-click: smooth detune, mix, filter_offset, and spread per sample
     detune_amount_ = smooth_detune_.Process(target_detune_);
     mix_ = smooth_mix_.Process(target_mix_);
     filter_offset_ = smooth_filter_offset_.Process(target_filter_offset_);
-    hpf_.SetFreq(freq_hz_ * filter_offset_, sample_rate_);
+    spread_ = smooth_spread_.Process(target_spread_);
+    float hpf_freq = freq_hz_ * filter_offset_;
+    hpf_.SetFreq(hpf_freq, sample_rate_);
+    hpf_r_.SetFreq(hpf_freq, sample_rate_);
+}
+
+float SuperSaw::Process() {
+    UpdateParams();
 
     float raw = authentic_ ? ProcessAuthentic() : ProcessFloat();
 
@@ -162,6 +178,19 @@ float SuperSaw::Process() {
     // This removes sub-fundamental aliased harmonics that sound harsh,
     // while preserving the above-fundamental aliasing that adds brightness.
     return hpf_.Process(raw);
+}
+
+void SuperSaw::ProcessStereo(float& left, float& right) {
+    UpdateParams();
+
+    if (authentic_) {
+        ProcessAuthenticStereo(left, right);
+    } else {
+        ProcessFloatStereo(left, right);
+    }
+
+    left = hpf_.Process(left);
+    right = hpf_r_.Process(right);
 }
 
 float SuperSaw::ProcessAuthentic() {
@@ -260,6 +289,92 @@ float SuperSaw::ProcessFloat() {
     }
 
     return sum * 0.15f;
+}
+
+void SuperSaw::ProcessAuthenticStereo(float& left, float& right) {
+    // Same oscillator advancement as ProcessAuthentic, but accumulates
+    // into separate L/R sums based on detune direction and spread.
+    // Positive-detune oscs (i=1,3,5) pan right, negative (i=2,4,6) pan left.
+    // Center osc (i=0) is equal in both channels.
+
+    int32_t sum_l = 0;
+    int32_t sum_r = 0;
+
+    for (int i = 0; i < NUM_OSCS; i++) {
+        static constexpr float kMaxDetuneScaled = 0.00529f;
+        int32_t pitch_x_detune = static_cast<int32_t>(
+            static_cast<float>(pitch_inc_) * detune_amount_ * kMaxDetuneScaled
+        );
+        int32_t voice_detune = (static_cast<int64_t>(kDetuneTable[i]) * pitch_x_detune) >> 7;
+        voice_detune = Wrap24(voice_detune);
+
+        saw_[i] = Wrap24(saw_[i] + pitch_inc_ + voice_detune);
+
+        if (i == 0) {
+            // Center osc: equal in both channels
+            sum_l = Wrap24(sum_l + saw_[i]);
+            sum_r = Wrap24(sum_r + saw_[i]);
+        } else {
+            int32_t scaled = static_cast<int32_t>(
+                static_cast<float>(saw_[i]) * mix_ * mix_
+            );
+            // Pan based on detune direction:
+            // Odd indices (1,3,5) have positive detune -> pan right
+            // Even indices (2,4,6) have negative detune -> pan left
+            float pan_r = 0.5f + (i % 2 == 1 ? spread_ * 0.5f : -spread_ * 0.5f);
+            float pan_l = 1.0f - pan_r;
+            sum_l = Wrap24(sum_l + static_cast<int32_t>(static_cast<float>(scaled) * pan_l * 2.0f));
+            sum_r = Wrap24(sum_r + static_cast<int32_t>(static_cast<float>(scaled) * pan_r * 2.0f));
+        }
+    }
+
+    left  = Int24ToFloat(sum_l) * 0.3f;
+    right = Int24ToFloat(sum_r) * 0.3f;
+}
+
+void SuperSaw::ProcessFloatStereo(float& left, float& right) {
+    // Same oscillator advancement as ProcessFloat, but accumulates
+    // into separate L/R sums based on detune direction and spread.
+
+    float sum_l = 0.0f;
+    float sum_r = 0.0f;
+    float phase_inc = freq_hz_ / sample_rate_;
+
+    static constexpr float kDetuneRatios[NUM_OSCS] = {
+        0.0f,
+        128.0f / 1440.0f,
+       -128.0f / 1440.0f,
+        816.0f / 1440.0f,
+       -824.0f / 1440.0f,
+        1408.0f / 1440.0f,
+       -1440.0f / 1440.0f
+    };
+
+    float max_detune_semitones = 1.0f;
+    float detune_factor = detune_amount_ * max_detune_semitones;
+
+    for (int i = 0; i < NUM_OSCS; i++) {
+        float detune_st = kDetuneRatios[i] * detune_factor;
+        float detuned_inc = phase_inc * powf(2.0f, detune_st / 12.0f);
+
+        saw_f_[i] += detuned_inc * 2.0f;
+        if (saw_f_[i] >= 1.0f) saw_f_[i] -= 2.0f;
+        if (saw_f_[i] < -1.0f) saw_f_[i] += 2.0f;
+
+        if (i == 0) {
+            sum_l += saw_f_[i];
+            sum_r += saw_f_[i];
+        } else {
+            float val = saw_f_[i] * mix_ * mix_;
+            float pan_r = 0.5f + (i % 2 == 1 ? spread_ * 0.5f : -spread_ * 0.5f);
+            float pan_l = 1.0f - pan_r;
+            sum_l += val * pan_l * 2.0f;
+            sum_r += val * pan_r * 2.0f;
+        }
+    }
+
+    left  = sum_l * 0.15f;
+    right = sum_r * 0.15f;
 }
 
 // ============================================================================

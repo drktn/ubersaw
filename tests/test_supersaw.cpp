@@ -1398,3 +1398,217 @@ TEST_CASE("Anti-click: detune change is gradual via autocorrelation") {
     // Early autocorrelation should be higher (detune not fully applied yet)
     CHECK(norm_early > norm_late);
 }
+
+// ============================================================================
+// Stereo spread (#17)
+// ============================================================================
+
+TEST_CASE("Stereo: spread=0 gives identical L and R (mono)") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+    ss.SetSpread(0.0f);
+    ss.Trigger();
+
+    // Let smoothers settle
+    for (int i = 0; i < 4000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+    }
+
+    for (int i = 0; i < 1000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+        CHECK(l == r);
+    }
+}
+
+TEST_CASE("Stereo: spread=0 matches mono Process()") {
+    // Two engines with identical seed/params. One uses Process(), other
+    // ProcessStereo with spread=0. Outputs should match.
+    SuperSaw mono;
+    mono.Init(kSampleRate);
+    mono.SetFreq(440.0f);
+    mono.SetDetune(0.5f);
+    mono.SetMix(1.0f);
+    mono.SetSpread(0.0f);
+
+    SuperSaw stereo;
+    stereo.Init(kSampleRate);
+    stereo.SetFreq(440.0f);
+    stereo.SetDetune(0.5f);
+    stereo.SetMix(1.0f);
+    stereo.SetSpread(0.0f);
+
+    for (int i = 0; i < 4000; i++) {
+        float m = mono.Process();
+        float l, r;
+        stereo.ProcessStereo(l, r);
+        CHECK(l == doctest::Approx(m));
+        CHECK(r == doctest::Approx(m));
+    }
+}
+
+TEST_CASE("Stereo: spread>0 creates L/R difference") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+    ss.SetSpread(1.0f);
+    ss.Trigger();
+
+    // Let smoothers settle
+    for (int i = 0; i < 4000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+    }
+
+    int diff_count = 0;
+    for (int i = 0; i < 1000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+        if (l != r) diff_count++;
+    }
+    CHECK(diff_count > 900);  // Almost all samples should differ
+}
+
+TEST_CASE("Stereo: center osc equal in both channels") {
+    // mix=0 -> only center osc. With spread=1, L and R should still match
+    // because center osc (i=0) is not panned.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(0.0f);
+    ss.SetSpread(1.0f);
+    ss.Trigger();
+
+    for (int i = 0; i < 4000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+    }
+
+    for (int i = 0; i < 1000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+        CHECK(l == r);
+    }
+}
+
+TEST_CASE("Stereo: increasing spread increases stereo width") {
+    // Measure L-R difference at spread=0.25, 0.5, 1.0.
+    // Use deterministic zero-phase init (no Trigger) so spread is the
+    // sole variable. Longer measurement window for stable results.
+    auto measureWidth = [](float spread) {
+        SuperSaw ss;
+        ss.Init(kSampleRate);
+        ss.SetFreq(440.0f);
+        ss.SetDetune(0.5f);
+        ss.SetMix(1.0f);
+        ss.SetSpread(spread);
+
+        // Settle smoothers
+        for (int i = 0; i < 4000; i++) {
+            float l, r;
+            ss.ProcessStereo(l, r);
+        }
+
+        double diff_energy = 0.0;
+        const int N = 96000;
+        for (int i = 0; i < N; i++) {
+            float l, r;
+            ss.ProcessStereo(l, r);
+            float d = l - r;
+            diff_energy += d * d;
+        }
+        return diff_energy / N;
+    };
+
+    double w_low  = measureWidth(0.25f);
+    double w_mid  = measureWidth(0.5f);
+    double w_high = measureWidth(1.0f);
+
+    CHECK(w_mid > w_low);
+    CHECK(w_high > w_mid);
+}
+
+TEST_CASE("Stereo: output levels reasonable") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+    ss.SetSpread(1.0f);
+    ss.Trigger();
+
+    for (int i = 0; i < 4000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+    }
+
+    for (int i = 0; i < 96000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+        REQUIRE(std::isfinite(l));
+        REQUIRE(std::isfinite(r));
+        REQUIRE(l >= -2.0f);
+        REQUIRE(l <= 2.0f);
+        REQUIRE(r >= -2.0f);
+        REQUIRE(r <= 2.0f);
+    }
+}
+
+TEST_CASE("Stereo: works in float mode") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+    ss.SetSpread(1.0f);
+    ss.SetAuthentic(false);
+    ss.Trigger();
+
+    for (int i = 0; i < 4000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+    }
+
+    int diff_count = 0;
+    for (int i = 0; i < 1000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+        REQUIRE(std::isfinite(l));
+        REQUIRE(std::isfinite(r));
+        if (l != r) diff_count++;
+    }
+    CHECK(diff_count > 900);
+}
+
+TEST_CASE("Stereo: spread=0 in float mode matches mono Process()") {
+    SuperSaw mono;
+    mono.Init(kSampleRate);
+    mono.SetFreq(440.0f);
+    mono.SetDetune(0.5f);
+    mono.SetMix(1.0f);
+    mono.SetSpread(0.0f);
+    mono.SetAuthentic(false);
+
+    SuperSaw stereo;
+    stereo.Init(kSampleRate);
+    stereo.SetFreq(440.0f);
+    stereo.SetDetune(0.5f);
+    stereo.SetMix(1.0f);
+    stereo.SetSpread(0.0f);
+    stereo.SetAuthentic(false);
+
+    for (int i = 0; i < 4000; i++) {
+        float m = mono.Process();
+        float l, r;
+        stereo.ProcessStereo(l, r);
+        CHECK(l == doctest::Approx(m));
+        CHECK(r == doctest::Approx(m));
+    }
+}

@@ -4,13 +4,14 @@ LDFLAGS   = -lm
 
 SRC_DIR   = ../src
 
-TEST_BINS = test_runner test_smooth_runner test_gate_runner test_saturator_runner test_sub_osc_runner
+TEST_BINS = test_runner test_smooth_runner test_gate_runner test_saturator_runner test_sub_osc_runner test_lfo_runner
 
 SRCS_SUPERSAW = test_supersaw.cpp $(SRC_DIR)/supersaw.cpp
 SRCS_SMOOTH   = test_smooth.cpp
 SRCS_GATE     = test_gate.cpp
 SRCS_SAT      = test_saturator.cpp
 SRCS_SUB_OSC  = test_sub_osc.cpp
+SRCS_LFO      = test_lfo.cpp
 
 .PHONY: all clean test
 
@@ -31,12 +32,16 @@ test_saturator_runner: $(SRCS_SAT)
 test_sub_osc_runner: $(SRCS_SUB_OSC)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
+test_lfo_runner: $(SRCS_LFO)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
 test: $(TEST_BINS)
 	./test_runner
 	./test_smooth_runner
 	./test_gate_runner
 	./test_saturator_runner
 	./test_sub_osc_runner
+	./test_lfo_runner
 
 clean:
 	rm -f $(TEST_BINS)
