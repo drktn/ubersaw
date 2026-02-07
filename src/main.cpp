@@ -27,6 +27,7 @@
 #include "daisysp.h"
 #include "supersaw.h"
 #include "voct.h"
+#include "gate_output.h"
 
 using namespace daisy;
 using namespace patch_sm;
@@ -34,6 +35,10 @@ using namespace patch_sm;
 // Hardware and DSP objects
 DaisyPatchSM hw;
 SuperSaw     supersaw;
+Switch       toggle;
+Switch       button;
+dsy_gpio     gate_out_1;
+GateOutput   gate_logic;
 
 // State tracking
 bool prev_gate = false;
@@ -68,13 +73,14 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     prev_gate = gate;
 
     // ---- Read toggle switch for mode ----
-    // TODO: Read toggle switch GPIO to select authentic vs. modern mode
-    // For now, default to authentic mode
-    supersaw.SetAuthentic(true);
+    toggle.Debounce();
+    supersaw.SetAuthentic(toggle.Pressed());
 
     // ---- Read button for manual trigger ----
-    // TODO: Read button GPIO for manual trigger
-    // bool button = !dsy_gpio_read(&hw.???); // Active low
+    button.Debounce();
+    bool btn = button.Pressed();
+    bool btn_trig = (btn && !prev_button);
+    prev_button = btn;
 
     // ---- Combine knob + CV for each parameter ----
     // Pitch: knob sets base, CV adds V/Oct
@@ -98,10 +104,14 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     float tone = fclamp(knob_tone + tone_cv * 0.5f, 0.0f, 1.0f);
     supersaw.SetFilterOffset(0.25f + tone * 1.5f);  // Range: 0.25x to 1.75x fundamental
 
-    // ---- Trigger on gate rising edge ----
-    if (gate_trig) {
+    // ---- Trigger on gate rising edge or button press ----
+    if (gate_trig || btn_trig) {
         supersaw.Trigger();
     }
+
+    // ---- Gate output (pass-through or clock divider) ----
+    bool gate_out = gate_logic.Process(gate);
+    dsy_gpio_write(&gate_out_1, gate_out);
 
     // ---- Generate audio ----
     for (size_t i = 0; i < size; i++) {
@@ -131,6 +141,18 @@ int main(void) {
 
     // Initialize supersaw engine
     supersaw.Init(sample_rate);
+
+    // Initialize toggle switch (pin B8) and button (pin B7)
+    toggle.Init(DaisyPatchSM::B8, hw.AudioCallbackRate());
+    button.Init(DaisyPatchSM::B7, hw.AudioCallbackRate());
+
+    // Initialize gate output 1 (pin B5)
+    gate_out_1.pin = DaisyPatchSM::B5;
+    gate_out_1.mode = DSY_GPIO_MODE_OUTPUT_PP;
+    dsy_gpio_init(&gate_out_1);
+
+    // Initialize gate logic
+    gate_logic.Init();
 
     // Start ADC for reading knobs and CV
     hw.StartAdc();
