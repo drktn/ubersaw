@@ -48,9 +48,32 @@ void SuperSaw::SetFreq(float freq_hz) {
 }
 
 void SuperSaw::SetDetune(float detune) {
-    // Store raw 0..1 parameter. Scaling to fixed-point happens in Process.
-    // Full detune (1.0) produces ~1 semitone spread on the widest osc pair.
-    detune_amount_ = detune;
+    // Apply Szabo 11th-order polynomial curve to shape the detune knob response.
+    // The JP-8000 uses a non-linear curve: gentle at low settings, aggressive
+    // at the top. Coefficients from Adam Szabo's thesis "How to Emulate the
+    // Super Saw", confirmed by 39C3 reverse engineering / JE-8086 emulator.
+    //
+    // Polynomial: detune(x) = c0*x^11 + c1*x^10 + ... + c10*x + c11
+    // Input x in [0,1], output ≈ [0.003, 1.0]
+    float x = detune;
+    if (x < 0.0f) x = 0.0f;
+    if (x > 1.0f) x = 1.0f;
+
+    // Horner's method for numerical stability and efficiency
+    float shaped = ((((((((((10028.7312891634f * x
+                     - 50818.8652045924f) * x
+                     + 111363.4808729368f) * x
+                     - 138150.6761080548f) * x
+                     + 106649.6679158292f) * x
+                     - 53046.9642751875f) * x
+                     + 17019.9518580080f) * x
+                     - 3425.0836591318f) * x
+                     + 404.2703938388f) * x
+                     - 24.1878824391f) * x
+                     + 0.6717417634f) * x
+                     + 0.0030115596f;
+
+    detune_amount_ = shaped;
 }
 
 void SuperSaw::SetMix(float mix) {

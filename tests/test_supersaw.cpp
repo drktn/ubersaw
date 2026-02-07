@@ -486,6 +486,104 @@ TEST_CASE("Full detune maintains periodicity - float mode") {
 }
 
 // ============================================================================
+// Detune knob curve (Szabo 11th-order polynomial, #5)
+// ============================================================================
+// The JP-8000 detune knob uses a non-linear curve: gentle at low settings,
+// aggressive at the top. Documented in Adam Szabo's thesis "How to Emulate
+// the Super Saw" as an 11th-order polynomial fit. Confirmed by 39C3 reverse
+// engineering and JE-8086 emulator.
+
+TEST_CASE("Detune curve is non-linear: midpoint much less than half spread") {
+    // Szabo polynomial: detune(0.5) ≈ 0.098 — much less than linear 0.5.
+    // Measure via autocorrelation: less effective detune -> higher correlation.
+    auto measureAutocorr = [](float detune, bool authentic) {
+        SuperSaw ss;
+        ss.Init(kSampleRate);
+        ss.SetFreq(440.0f);
+        ss.SetDetune(detune);
+        ss.SetMix(1.0f);
+        ss.SetAuthentic(authentic);
+        for (int i = 0; i < 4000; i++) ss.Process();
+        const int N = 48000;
+        std::vector<float> samples(N);
+        for (int i = 0; i < N; i++) samples[i] = ss.Process();
+        int period = static_cast<int>(kSampleRate / 440.0f);
+        double ac = 0.0, e = 0.0;
+        for (int i = 0; i < N - period; i++) {
+            ac += samples[i] * samples[static_cast<size_t>(i + period)];
+            e += samples[i] * samples[i];
+        }
+        return ac / e;
+    };
+
+    // Authentic mode: with shaped curve, detune(0.5) ≈ 0.098, so midpoint
+    // autocorrelation should be higher than full detune and very high overall.
+    double ac_half_auth = measureAutocorr(0.5f, true);
+    double ac_full_auth = measureAutocorr(1.0f, true);
+    CHECK(ac_half_auth > ac_full_auth);
+    CHECK(ac_half_auth > 0.9);  // Near-unison at shaped midpoint
+
+    // Float mode same check
+    double ac_half_flt = measureAutocorr(0.5f, false);
+    double ac_full_flt = measureAutocorr(1.0f, false);
+    CHECK(ac_half_flt > ac_full_flt);
+    CHECK(ac_half_flt > 0.9);
+}
+
+TEST_CASE("Detune curve: near-zero knob produces near-unison") {
+    // At detune=0.05, shaped curve gives ≈ 0.008 — virtually unison.
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.05f);
+    ss.SetMix(1.0f);
+
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    const int N = 48000;
+    std::vector<float> samples(N);
+    for (int i = 0; i < N; i++) samples[i] = ss.Process();
+
+    int period = static_cast<int>(kSampleRate / 440.0f);
+    double autocorr = 0.0, energy = 0.0;
+    for (int i = 0; i < N - period; i++) {
+        autocorr += samples[i] * samples[static_cast<size_t>(i + period)];
+        energy += samples[i] * samples[i];
+    }
+    double normalized = autocorr / energy;
+    CHECK(normalized > 0.9);
+}
+
+TEST_CASE("Detune curve: monotonically increasing spread") {
+    // Higher knob position -> more detune -> lower autocorrelation.
+    auto measureAutocorr = [](float detune) {
+        SuperSaw ss;
+        ss.Init(kSampleRate);
+        ss.SetFreq(440.0f);
+        ss.SetDetune(detune);
+        ss.SetMix(1.0f);
+        for (int i = 0; i < 4000; i++) ss.Process();
+        const int N = 48000;
+        std::vector<float> samples(N);
+        for (int i = 0; i < N; i++) samples[i] = ss.Process();
+        int period = static_cast<int>(kSampleRate / 440.0f);
+        double ac = 0.0, e = 0.0;
+        for (int i = 0; i < N - period; i++) {
+            ac += samples[i] * samples[static_cast<size_t>(i + period)];
+            e += samples[i] * samples[i];
+        }
+        return ac / e;
+    };
+
+    double ac_low  = measureAutocorr(0.1f);
+    double ac_mid  = measureAutocorr(0.5f);
+    double ac_high = measureAutocorr(0.9f);
+
+    CHECK(ac_low > ac_mid);
+    CHECK(ac_mid > ac_high);
+}
+
+// ============================================================================
 // A/B comparison: Authentic vs Float mode characterization
 // ============================================================================
 // These tests quantify differences between ProcessAuthentic() and ProcessFloat().
