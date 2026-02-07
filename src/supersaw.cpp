@@ -201,6 +201,28 @@ void SuperSaw::ProcessStereo(float& left, float& right) {
     right = hpf_r_.Process(right);
 }
 
+void SuperSaw::ProcessBlock(float* out, size_t n) {
+    UpdateParams();
+    for (size_t i = 0; i < n; i++) {
+        float raw = authentic_ ? ProcessAuthentic() : ProcessFloat();
+        out[i] = hpf_.Process(raw);
+    }
+}
+
+void SuperSaw::ProcessBlockStereo(float* left, float* right, size_t n) {
+    UpdateParams();
+    for (size_t i = 0; i < n; i++) {
+        float l, r;
+        if (authentic_) {
+            ProcessAuthenticStereo(l, r);
+        } else {
+            ProcessFloatStereo(l, r);
+        }
+        left[i] = hpf_.Process(l);
+        right[i] = hpf_r_.Process(r);
+    }
+}
+
 float SuperSaw::ProcessAuthentic() {
     // ====================================================================
     // AUTHENTIC JP-8000 ALGORITHM — 24-bit fixed-point

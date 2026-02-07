@@ -45,7 +45,7 @@ See [scope-debug.md](scope-debug.md) for measurement procedures.
 
 ## Phase 5 — Extended Features (in progress)
 
-116 tests, 2.6M assertions passing.
+126 tests, 3.2M assertions passing.
 
 ### Audio enhancements
 
@@ -69,6 +69,6 @@ See [scope-debug.md](scope-debug.md) for measurement procedures.
 
 ### Performance
 
-- [ ] SIMD/DSP intrinsics for phase accumulation
-- [ ] Block-level parameter interpolation
-- [ ] Oversampling experiment (2x48k vs 96k)
+- [ ] SIMD/DSP intrinsics for phase accumulation (needs ARM)
+- [x] Block-level processing — ProcessBlock/ProcessBlockStereo API (#20)
+- [x] Oversampling characterization — 48k vs 96k vs 2x decimated (#21)

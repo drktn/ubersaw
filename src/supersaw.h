@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include "smooth.h"
 
@@ -68,6 +69,12 @@ public:
     /// Set whether to use authentic 24-bit fixed-point mode (true) or
     /// floating-point mode (false). Default: true.
     void SetAuthentic(bool authentic);
+
+    /// Process a block of N samples. Updates params once per block.
+    void ProcessBlock(float* out, size_t n);
+
+    /// Stereo block processing. Updates params once per block.
+    void ProcessBlockStereo(float* left, float* right, size_t n);
 
     /// Process one stereo audio sample pair. Pans detuned oscillators:
     /// center osc equal L/R, positive-detune oscs pan right, negative left.

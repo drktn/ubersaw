@@ -1821,3 +1821,350 @@ TEST_CASE("Voice count: works in float mode") {
     CHECK(rms1 < rms3);
     CHECK(rms3 < rms7);
 }
+
+// ============================================================================
+// ProcessBlock / ProcessBlockStereo (#20)
+// ============================================================================
+
+TEST_CASE("ProcessBlock: block of 1 matches Process()") {
+    // Same engine state, block size 1 output should match per-sample Process().
+    SuperSaw ss_block;
+    ss_block.Init(kSampleRate);
+    ss_block.SetFreq(440.0f);
+    ss_block.SetDetune(0.5f);
+    ss_block.SetMix(1.0f);
+
+    SuperSaw ss_sample;
+    ss_sample.Init(kSampleRate);
+    ss_sample.SetFreq(440.0f);
+    ss_sample.SetDetune(0.5f);
+    ss_sample.SetMix(1.0f);
+
+    // Settle both identically
+    for (int i = 0; i < 4000; i++) {
+        ss_block.Process();
+        ss_sample.Process();
+    }
+
+    // Compare block-of-1 vs per-sample for 100 samples
+    for (int i = 0; i < 100; i++) {
+        float block_out = 0.0f;
+        ss_block.ProcessBlock(&block_out, 1);
+        float sample_out = ss_sample.Process();
+        CHECK(block_out == doctest::Approx(sample_out));
+    }
+}
+
+TEST_CASE("ProcessBlock: output reasonable at block size 4") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    const int kBlockSize = 4;
+    const int kNumBlocks = 24000;  // 1 second at 96kHz/4
+    double energy = 0.0;
+    for (int b = 0; b < kNumBlocks; b++) {
+        float buf[kBlockSize];
+        ss.ProcessBlock(buf, kBlockSize);
+        for (int i = 0; i < kBlockSize; i++) {
+            REQUIRE(std::isfinite(buf[i]));
+            REQUIRE(buf[i] >= -2.0f);
+            REQUIRE(buf[i] <= 2.0f);
+            energy += buf[i] * buf[i];
+        }
+    }
+    double rms = std::sqrt(energy / (kBlockSize * kNumBlocks));
+    CHECK(rms > 0.01);
+    CHECK(rms < 1.0);
+}
+
+TEST_CASE("ProcessBlock: output reasonable at block size 32") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+
+    for (int i = 0; i < 4000; i++) ss.Process();
+
+    const int kBlockSize = 32;
+    const int kNumBlocks = 3000;  // 1 second at 96kHz/32
+    double energy = 0.0;
+    for (int b = 0; b < kNumBlocks; b++) {
+        float buf[kBlockSize];
+        ss.ProcessBlock(buf, kBlockSize);
+        for (int i = 0; i < kBlockSize; i++) {
+            REQUIRE(std::isfinite(buf[i]));
+            REQUIRE(buf[i] >= -2.0f);
+            REQUIRE(buf[i] <= 2.0f);
+            energy += buf[i] * buf[i];
+        }
+    }
+    double rms = std::sqrt(energy / (kBlockSize * kNumBlocks));
+    CHECK(rms > 0.01);
+    CHECK(rms < 1.0);
+}
+
+TEST_CASE("ProcessBlockStereo: spread=0 gives mono (L==R)") {
+    SuperSaw ss;
+    ss.Init(kSampleRate);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+    ss.SetSpread(0.0f);
+
+    // Settle smoothers
+    for (int i = 0; i < 4000; i++) {
+        float l, r;
+        ss.ProcessStereo(l, r);
+    }
+
+    const int kBlockSize = 4;
+    float left[kBlockSize], right[kBlockSize];
+    for (int b = 0; b < 100; b++) {
+        ss.ProcessBlockStereo(left, right, kBlockSize);
+        for (int i = 0; i < kBlockSize; i++) {
+            CHECK(left[i] == right[i]);
+        }
+    }
+}
+
+TEST_CASE("ProcessBlockStereo: matches ProcessStereo at block=1") {
+    SuperSaw ss_block;
+    ss_block.Init(kSampleRate);
+    ss_block.SetFreq(440.0f);
+    ss_block.SetDetune(0.5f);
+    ss_block.SetMix(1.0f);
+    ss_block.SetSpread(0.5f);
+
+    SuperSaw ss_sample;
+    ss_sample.Init(kSampleRate);
+    ss_sample.SetFreq(440.0f);
+    ss_sample.SetDetune(0.5f);
+    ss_sample.SetMix(1.0f);
+    ss_sample.SetSpread(0.5f);
+
+    // Settle both
+    for (int i = 0; i < 4000; i++) {
+        float l, r;
+        ss_block.ProcessStereo(l, r);
+        ss_sample.ProcessStereo(l, r);
+    }
+
+    for (int i = 0; i < 100; i++) {
+        float bl, br;
+        ss_block.ProcessBlockStereo(&bl, &br, 1);
+        float sl, sr;
+        ss_sample.ProcessStereo(sl, sr);
+        CHECK(bl == doctest::Approx(sl));
+        CHECK(br == doctest::Approx(sr));
+    }
+}
+
+// ============================================================================
+// Oversampling characterization (#21)
+// ============================================================================
+// Characterize aliasing differences between 48 kHz and 96 kHz sample rates,
+// and evaluate whether 2x-oversampled 48 kHz (run at 96k, decimate to 48k)
+// improves quality over native 48 kHz. These are characterization tests:
+// MESSAGE() logs measured values, CHECKs are soft (wide tolerances).
+// ============================================================================
+
+TEST_CASE("Oversampling: 48k vs 96k aliasing at 440 Hz") {
+    // At 440 Hz, aliasing is mild at both rates. 96k should show equal
+    // or slightly better autocorrelation at fundamental (less noise floor).
+    const float freq = 440.0f;
+    const int settle = 4000;
+    const int n48 = 4096;
+    const int n96 = 4096;
+
+    auto s48 = collectAtRate(48000.0f, freq, 0.5f, 1.0f, settle, n48);
+    auto s96 = collectAtRate(96000.0f, freq, 0.5f, 1.0f, settle, n96);
+
+    int period48 = static_cast<int>(48000.0f / freq);
+    int period96 = static_cast<int>(96000.0f / freq);
+
+    double ac48 = autocorrAt(s48, period48);
+    double ac96 = autocorrAt(s96, period96);
+
+    double rms48 = rmsOf(s48);
+    double rms96 = rmsOf(s96);
+
+    int zc48 = zeroCrossings(s48);
+    int zc96 = zeroCrossings(s96);
+    float zcFreq48 = static_cast<float>(zc48) / (2.0f * static_cast<float>(n48) / 48000.0f);
+    float zcFreq96 = static_cast<float>(zc96) / (2.0f * static_cast<float>(n96) / 96000.0f);
+
+    MESSAGE("Oversample 440Hz autocorr: 48k=" << ac48 << " 96k=" << ac96);
+    MESSAGE("Oversample 440Hz RMS: 48k=" << rms48 << " 96k=" << rms96);
+    MESSAGE("Oversample 440Hz ZC freq: 48k=" << zcFreq48 << " 96k=" << zcFreq96);
+
+    // Both should produce coherent signal
+    CHECK(ac48 > 0.0);
+    CHECK(ac96 > 0.0);
+    // 96k should be at least as periodic (soft: allow 96k to be slightly worse)
+    CHECK(ac96 > ac48 - 0.2);
+    // RMS should be in same ballpark
+    CHECK(rms48 > 0.01);
+    CHECK(rms96 > 0.01);
+}
+
+TEST_CASE("Oversampling: 48k vs 96k aliasing at 2 kHz") {
+    // At 2 kHz, harmonics alias more at 48k (Nyquist=24k, only 12 harmonics
+    // fit cleanly). 96k (Nyquist=48k) fits 24 harmonics — less fold-back.
+    const float freq = 2000.0f;
+    const int settle = 4000;
+    const int N = 4096;
+
+    auto s48 = collectAtRate(48000.0f, freq, 0.5f, 1.0f, settle, N);
+    auto s96 = collectAtRate(96000.0f, freq, 0.5f, 1.0f, settle, N);
+
+    int period48 = static_cast<int>(48000.0f / freq);
+    int period96 = static_cast<int>(96000.0f / freq);
+
+    double ac48 = autocorrAt(s48, period48);
+    double ac96 = autocorrAt(s96, period96);
+
+    double rms48 = rmsOf(s48);
+    double rms96 = rmsOf(s96);
+
+    MESSAGE("Oversample 2kHz autocorr: 48k=" << ac48 << " 96k=" << ac96);
+    MESSAGE("Oversample 2kHz RMS: 48k=" << rms48 << " 96k=" << rms96);
+
+    CHECK(ac48 > 0.0);
+    CHECK(ac96 > 0.0);
+    // 96k should show clearer advantage at higher frequencies
+    CHECK(ac96 > ac48 - 0.15);
+    CHECK(rms48 > 0.01);
+    CHECK(rms96 > 0.01);
+}
+
+TEST_CASE("Oversampling: 48k vs 96k aliasing at 8 kHz") {
+    // 8 kHz is extreme: at 48k, Nyquist is only 3x fundamental — massive
+    // aliasing. At 96k, Nyquist is 6x — still significant but less severe.
+    // Expect dramatically different autocorrelation.
+    const float freq = 8000.0f;
+    const int settle = 4000;
+    const int N = 4096;
+
+    auto s48 = collectAtRate(48000.0f, freq, 0.5f, 1.0f, settle, N);
+    auto s96 = collectAtRate(96000.0f, freq, 0.5f, 1.0f, settle, N);
+
+    int period48 = static_cast<int>(48000.0f / freq);
+    int period96 = static_cast<int>(96000.0f / freq);
+
+    double ac48 = autocorrAt(s48, period48);
+    double ac96 = autocorrAt(s96, period96);
+
+    double rms48 = rmsOf(s48);
+    double rms96 = rmsOf(s96);
+
+    int zc48 = zeroCrossings(s48);
+    int zc96 = zeroCrossings(s96);
+    float zcFreq48 = static_cast<float>(zc48) / (2.0f * static_cast<float>(N) / 48000.0f);
+    float zcFreq96 = static_cast<float>(zc96) / (2.0f * static_cast<float>(N) / 96000.0f);
+
+    MESSAGE("Oversample 8kHz autocorr: 48k=" << ac48 << " 96k=" << ac96);
+    MESSAGE("Oversample 8kHz RMS: 48k=" << rms48 << " 96k=" << rms96);
+    MESSAGE("Oversample 8kHz ZC freq: 48k=" << zcFreq48 << " 96k=" << zcFreq96);
+
+    // Both produce signal
+    CHECK(rms48 > 0.0);
+    CHECK(rms96 > 0.0);
+    // 96k autocorrelation should be significantly better
+    CHECK(ac96 > ac48 - 0.1);
+    CHECK(std::isfinite(ac48));
+    CHECK(std::isfinite(ac96));
+}
+
+TEST_CASE("Oversampling: 2x48k decimated vs native 48k at 440 Hz") {
+    // Run engine at 96k (simulating 2x oversampled 48k), then decimate by
+    // averaging pairs to get 48k-equivalent output. Compare vs native 48k.
+    // If oversampling helps, decimated signal should have higher autocorrelation.
+    const float freq = 440.0f;
+    const int settle = 4000;
+    const int n_native = 4096;
+    const int n_oversampled = n_native * 2;
+
+    auto s_native = collectAtRate(48000.0f, freq, 0.5f, 1.0f, settle, n_native);
+
+    auto s_96k = collectAtRate(96000.0f, freq, 0.5f, 1.0f, settle, n_oversampled);
+    std::vector<float> s_decimated(n_native);
+    for (int i = 0; i < n_native; i++) {
+        s_decimated[i] = (s_96k[i * 2] + s_96k[i * 2 + 1]) * 0.5f;
+    }
+
+    int period = static_cast<int>(48000.0f / freq);
+
+    double ac_native    = autocorrAt(s_native, period);
+    double ac_decimated = autocorrAt(s_decimated, period);
+
+    double rms_native    = rmsOf(s_native);
+    double rms_decimated = rmsOf(s_decimated);
+
+    int zc_native    = zeroCrossings(s_native);
+    int zc_decimated = zeroCrossings(s_decimated);
+    float zcFreq_native    = static_cast<float>(zc_native)    / (2.0f * static_cast<float>(n_native) / 48000.0f);
+    float zcFreq_decimated = static_cast<float>(zc_decimated) / (2.0f * static_cast<float>(n_native) / 48000.0f);
+
+    MESSAGE("Oversample decimate 440Hz autocorr: native48k=" << ac_native
+            << " 2x_decimated=" << ac_decimated);
+    MESSAGE("Oversample decimate 440Hz RMS: native48k=" << rms_native
+            << " 2x_decimated=" << rms_decimated);
+    MESSAGE("Oversample decimate 440Hz ZC freq: native48k=" << zcFreq_native
+            << " 2x_decimated=" << zcFreq_decimated);
+
+    CHECK(rms_native > 0.01);
+    CHECK(rms_decimated > 0.01);
+    CHECK(ac_decimated > ac_native - 0.2);
+    CHECK(std::isfinite(ac_native));
+    CHECK(std::isfinite(ac_decimated));
+}
+
+TEST_CASE("Oversampling: 2x48k decimated vs native 48k at 4 kHz") {
+    // Same decimation test at higher frequency where oversampling benefit
+    // should be more pronounced. The simple averaging decimation acts as
+    // a crude lowpass, attenuating aliased harmonics.
+    const float freq = 4000.0f;
+    const int settle = 4000;
+    const int n_native = 4096;
+    const int n_oversampled = n_native * 2;
+
+    auto s_native = collectAtRate(48000.0f, freq, 0.5f, 1.0f, settle, n_native);
+
+    auto s_96k = collectAtRate(96000.0f, freq, 0.5f, 1.0f, settle, n_oversampled);
+    std::vector<float> s_decimated(n_native);
+    for (int i = 0; i < n_native; i++) {
+        s_decimated[i] = (s_96k[i * 2] + s_96k[i * 2 + 1]) * 0.5f;
+    }
+
+    int period = static_cast<int>(48000.0f / freq);
+
+    double ac_native    = autocorrAt(s_native, period);
+    double ac_decimated = autocorrAt(s_decimated, period);
+
+    double rms_native    = rmsOf(s_native);
+    double rms_decimated = rmsOf(s_decimated);
+
+    int zc_native    = zeroCrossings(s_native);
+    int zc_decimated = zeroCrossings(s_decimated);
+    float zcFreq_native    = static_cast<float>(zc_native)    / (2.0f * static_cast<float>(n_native) / 48000.0f);
+    float zcFreq_decimated = static_cast<float>(zc_decimated) / (2.0f * static_cast<float>(n_native) / 48000.0f);
+
+    MESSAGE("Oversample decimate 4kHz autocorr: native48k=" << ac_native
+            << " 2x_decimated=" << ac_decimated);
+    MESSAGE("Oversample decimate 4kHz RMS: native48k=" << rms_native
+            << " 2x_decimated=" << rms_decimated);
+    MESSAGE("Oversample decimate 4kHz ZC freq: native48k=" << zcFreq_native
+            << " 2x_decimated=" << zcFreq_decimated);
+
+    CHECK(rms_native > 0.0);
+    CHECK(rms_decimated > 0.0);
+    CHECK(ac_decimated > ac_native - 0.15);
+    CHECK(std::isfinite(ac_native));
+    CHECK(std::isfinite(ac_decimated));
+}
