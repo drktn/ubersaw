@@ -4,10 +4,11 @@ LDFLAGS   = -lm
 
 SRC_DIR   = ../src
 
-TEST_BINS = test_runner test_smooth_runner
+TEST_BINS = test_runner test_smooth_runner test_gate_runner
 
 SRCS_SUPERSAW = test_supersaw.cpp $(SRC_DIR)/supersaw.cpp
 SRCS_SMOOTH   = test_smooth.cpp
+SRCS_GATE     = test_gate.cpp
 
 .PHONY: all clean test
 
@@ -19,9 +20,13 @@ test_runner: $(SRCS_SUPERSAW)
 test_smooth_runner: $(SRCS_SMOOTH)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
+test_gate_runner: $(SRCS_GATE)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
 test: $(TEST_BINS)
 	./test_runner
 	./test_smooth_runner
+	./test_gate_runner
 
 clean:
-	rm -f $(TEST_BINS)
+	rm -f $(TEST_BINS) test_gate_runner
