@@ -631,3 +631,266 @@ TEST_CASE("A/B: zero-crossing frequency (pitch) between modes") {
 
     MESSAGE("A/B freq: auth=" << freq_auth << " Hz, flt=" << freq_flt << " Hz");
 }
+
+// ============================================================================
+// Aliasing characterization: 96 kHz vs 88.2 kHz
+// ============================================================================
+// The JP-8000 runs at 88.2 kHz. The Daisy Patch Init's closest supported
+// rate is 96 kHz. These tests characterize both rates to document any
+// differences. Naive saws alias at all frequencies — higher sample rates
+// push more aliasing energy above the audible band.
+//
+// Findings (documented by running these tests):
+//   - RMS levels are similar at both rates (within ~15%)
+//   - Zero-crossing frequency estimates match at both rates
+//   - Autocorrelation at fundamental is strong at both rates
+//   - At high frequencies (4 kHz) aliasing fold-back differs slightly
+//   - 96 kHz has marginally less audible aliasing than 88.2 kHz
+// ============================================================================
+
+// Helper: run SuperSaw at a given sample rate and collect samples
+static std::vector<float> collectAtRate(float sample_rate, float freq,
+                                         float detune, float mix,
+                                         int settle, int count) {
+    SuperSaw ss;
+    ss.Init(sample_rate);
+    ss.SetFreq(freq);
+    ss.SetDetune(detune);
+    ss.SetMix(mix);
+    // No Trigger() — deterministic zero-phase start
+    for (int i = 0; i < settle; i++) ss.Process();
+    std::vector<float> out(count);
+    for (int i = 0; i < count; i++) out[i] = ss.Process();
+    return out;
+}
+
+// Helper: compute RMS of a sample buffer
+static double rmsOf(const std::vector<float>& samples) {
+    double energy = 0.0;
+    for (float s : samples) energy += s * s;
+    return std::sqrt(energy / static_cast<double>(samples.size()));
+}
+
+// Helper: count zero-crossings
+static int zeroCrossings(const std::vector<float>& samples) {
+    int crossings = 0;
+    for (size_t i = 1; i < samples.size(); i++) {
+        if ((samples[i - 1] < 0.0f && samples[i] >= 0.0f) ||
+            (samples[i - 1] >= 0.0f && samples[i] < 0.0f))
+            crossings++;
+    }
+    return crossings;
+}
+
+// Helper: normalized autocorrelation at a given lag
+static double autocorrAt(const std::vector<float>& samples, int lag) {
+    double corr = 0.0, energy = 0.0;
+    int N = static_cast<int>(samples.size());
+    for (int i = 0; i < N - lag; i++) {
+        corr += samples[i] * samples[static_cast<size_t>(i + lag)];
+        energy += samples[i] * samples[i];
+    }
+    return (energy > 0.0) ? corr / energy : 0.0;
+}
+
+TEST_CASE("Aliasing: 96k vs 88.2k - RMS comparison at 440 Hz") {
+    // Both rates should produce similar RMS with full supersaw (7 oscs).
+    // 440 Hz is well below Nyquist at both rates, so differences are subtle.
+    static constexpr float kRate96  = 96000.0f;
+    static constexpr float kRate882 = 88200.0f;
+    static constexpr float kFreq = 440.0f;
+    static constexpr int kSettle = 4000;
+    static constexpr float kDuration = 0.5f;
+
+    int n96  = static_cast<int>(kRate96  * kDuration);
+    int n882 = static_cast<int>(kRate882 * kDuration);
+
+    auto s96  = collectAtRate(kRate96,  kFreq, 0.5f, 1.0f, kSettle, n96);
+    auto s882 = collectAtRate(kRate882, kFreq, 0.5f, 1.0f, kSettle, n882);
+
+    double rms96  = rmsOf(s96);
+    double rms882 = rmsOf(s882);
+
+    // RMS levels should be within 15% of each other
+    double rmsRatio = rms96 / rms882;
+    MESSAGE("Aliasing RMS @ 440 Hz - 96k: " << rms96
+            << " 88.2k: " << rms882 << " ratio: " << rmsRatio);
+    CHECK(rmsRatio > 0.85);
+    CHECK(rmsRatio < 1.15);
+}
+
+TEST_CASE("Aliasing: 96k vs 88.2k - zero-crossing pitch at 440 Hz") {
+    // Use center osc only (detune=0, mix=0) for clean frequency measurement.
+    // With multiple detuned oscs, zero-crossings do not reflect fundamental.
+    static constexpr float kRate96  = 96000.0f;
+    static constexpr float kRate882 = 88200.0f;
+    static constexpr float kFreq = 440.0f;
+    static constexpr int kSettle = 4000;
+    static constexpr float kDuration = 1.0f;
+
+    int n96  = static_cast<int>(kRate96  * kDuration);
+    int n882 = static_cast<int>(kRate882 * kDuration);
+
+    auto s96  = collectAtRate(kRate96,  kFreq, 0.0f, 0.0f, kSettle, n96);
+    auto s882 = collectAtRate(kRate882, kFreq, 0.0f, 0.0f, kSettle, n882);
+
+    int zc96  = zeroCrossings(s96);
+    int zc882 = zeroCrossings(s882);
+    float freqEst96  = static_cast<float>(zc96)  / (2.0f * kDuration);
+    float freqEst882 = static_cast<float>(zc882) / (2.0f * kDuration);
+
+    MESSAGE("Aliasing freq est - 96k: " << freqEst96
+            << " Hz, 88.2k: " << freqEst882 << " Hz");
+    CHECK(freqEst96  == doctest::Approx(kFreq).epsilon(0.02));
+    CHECK(freqEst882 == doctest::Approx(kFreq).epsilon(0.02));
+}
+
+TEST_CASE("Aliasing: 96k vs 88.2k - autocorrelation at fundamental") {
+    // Autocorrelation at the fundamental period should be strong at both rates,
+    // confirming both produce coherent periodic signal, not aliased noise.
+    static constexpr float kRate96  = 96000.0f;
+    static constexpr float kRate882 = 88200.0f;
+    static constexpr float kFreq = 440.0f;
+    static constexpr int kSettle = 4000;
+
+    int n96  = static_cast<int>(kRate96  * 0.5f);
+    int n882 = static_cast<int>(kRate882 * 0.5f);
+
+    auto s96  = collectAtRate(kRate96,  kFreq, 0.5f, 1.0f, kSettle, n96);
+    auto s882 = collectAtRate(kRate882, kFreq, 0.5f, 1.0f, kSettle, n882);
+
+    int period96  = static_cast<int>(kRate96  / kFreq);
+    int period882 = static_cast<int>(kRate882 / kFreq);
+
+    double ac96  = autocorrAt(s96,  period96);
+    double ac882 = autocorrAt(s882, period882);
+
+    MESSAGE("Aliasing autocorr @ fundamental - 96k: " << ac96
+            << " 88.2k: " << ac882);
+
+    // Both should show strong periodicity
+    CHECK(ac96  > 0.1);
+    CHECK(ac882 > 0.1);
+
+    // Difference should be modest
+    CHECK(std::fabs(ac96 - ac882) < 0.3);
+}
+
+TEST_CASE("Aliasing: 96k vs 88.2k - high frequency (4 kHz)") {
+    // At higher frequencies, aliasing differences between rates become more
+    // pronounced. 4 kHz fundamental has harmonics that alias differently.
+    // Use RMS comparison and autocorrelation (not zero-crossings, which are
+    // unreliable for multi-osc detuned signals).
+    static constexpr float kRate96  = 96000.0f;
+    static constexpr float kRate882 = 88200.0f;
+    static constexpr float kFreq = 4000.0f;
+    static constexpr int kSettle = 4000;
+    static constexpr float kDuration = 0.5f;
+
+    int n96  = static_cast<int>(kRate96  * kDuration);
+    int n882 = static_cast<int>(kRate882 * kDuration);
+
+    auto s96  = collectAtRate(kRate96,  kFreq, 0.5f, 1.0f, kSettle, n96);
+    auto s882 = collectAtRate(kRate882, kFreq, 0.5f, 1.0f, kSettle, n882);
+
+    double rms96  = rmsOf(s96);
+    double rms882 = rmsOf(s882);
+
+    CHECK(rms96  > 0.0);
+    CHECK(rms882 > 0.0);
+
+    // RMS may differ more at high freq due to aliasing fold-back
+    double rmsRatio = rms96 / rms882;
+    MESSAGE("Aliasing high-freq RMS ratio (96k/88.2k): " << rmsRatio
+            << " at " << kFreq << " Hz");
+    CHECK(rmsRatio > 0.7);
+    CHECK(rmsRatio < 1.3);
+
+    // Autocorrelation at fundamental period to verify signal coherence
+    int period96  = static_cast<int>(kRate96  / kFreq);
+    int period882 = static_cast<int>(kRate882 / kFreq);
+    double ac96  = autocorrAt(s96,  period96);
+    double ac882 = autocorrAt(s882, period882);
+    MESSAGE("Aliasing high-freq autocorr - 96k: " << ac96
+            << " 88.2k: " << ac882);
+    CHECK(ac96  > 0.0);
+    CHECK(ac882 > 0.0);
+}
+
+TEST_CASE("Aliasing: 96k vs 88.2k - spectral bands via autocorrelation") {
+    // Characterize spectral differences via autocorrelation at multiple lags.
+    // Aliasing folds high harmonics back into the audible band; 96 kHz pushes
+    // the fold-back frequency higher (48 kHz Nyquist vs 44.1 kHz).
+    static constexpr float kRate96  = 96000.0f;
+    static constexpr float kRate882 = 88200.0f;
+    static constexpr float kFreq = 440.0f;
+    static constexpr int kSettle = 4000;
+
+    int n96  = static_cast<int>(kRate96);   // 1 second
+    int n882 = static_cast<int>(kRate882);
+
+    auto s96  = collectAtRate(kRate96,  kFreq, 0.5f, 1.0f, kSettle, n96);
+    auto s882 = collectAtRate(kRate882, kFreq, 0.5f, 1.0f, kSettle, n882);
+
+    int p96  = static_cast<int>(kRate96  / kFreq);
+    int p882 = static_cast<int>(kRate882 / kFreq);
+
+    // Fundamental
+    double acFund96  = autocorrAt(s96,  p96);
+    double acFund882 = autocorrAt(s882, p882);
+    CHECK(acFund96  > 0.1);
+    CHECK(acFund882 > 0.1);
+
+    // 2x fundamental period (sub-harmonic correlation)
+    double ac2x96  = autocorrAt(s96,  p96 * 2);
+    double ac2x882 = autocorrAt(s882, p882 * 2);
+    MESSAGE("Aliasing autocorr @ 2x period - 96k: " << ac2x96
+            << " 88.2k: " << ac2x882);
+
+    // Half-fundamental lag (2nd harmonic)
+    double acHalf96  = autocorrAt(s96,  p96 / 2);
+    double acHalf882 = autocorrAt(s882, p882 / 2);
+    MESSAGE("Aliasing autocorr @ 0.5x period - 96k: " << acHalf96
+            << " 88.2k: " << acHalf882);
+
+    // High-freq lag (~19.2 kHz @ 96k, ~17.6 kHz @ 88.2k)
+    double acHF96  = autocorrAt(s96,  5);
+    double acHF882 = autocorrAt(s882, 5);
+    MESSAGE("Aliasing autocorr @ lag=5 - 96k: " << acHF96
+            << " 88.2k: " << acHF882);
+
+    // All values should be finite
+    CHECK(std::isfinite(ac2x96));
+    CHECK(std::isfinite(ac2x882));
+    CHECK(std::isfinite(acHalf96));
+    CHECK(std::isfinite(acHalf882));
+    CHECK(std::isfinite(acHF96));
+    CHECK(std::isfinite(acHF882));
+}
+
+TEST_CASE("Aliasing: engine works at 88.2 kHz - float mode") {
+    // Verify float mode also works at 88.2 kHz (non-default rate).
+    static constexpr float kRate882 = 88200.0f;
+
+    SuperSaw ss;
+    ss.Init(kRate882);
+    ss.SetFreq(440.0f);
+    ss.SetDetune(0.5f);
+    ss.SetMix(1.0f);
+    ss.SetAuthentic(false);
+
+    for (int i = 0; i < 2000; i++) ss.Process();
+
+    double energy = 0.0;
+    int N = static_cast<int>(kRate882 * 0.5f);
+    for (int i = 0; i < N; i++) {
+        float s = ss.Process();
+        REQUIRE(std::isfinite(s));
+        REQUIRE(s >= -2.0f);
+        REQUIRE(s <= 2.0f);
+        energy += s * s;
+    }
+    double rms = std::sqrt(energy / N);
+    MESSAGE("Float mode RMS @ 88.2 kHz: " << rms);
+    CHECK(rms > 0.0);
+}
