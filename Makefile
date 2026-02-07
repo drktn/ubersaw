@@ -24,3 +24,8 @@ OPT = -O2
 # flash targets, include paths for libDaisy, DaisySP, STM32 HAL, and CMSIS.
 SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
 include $(SYSTEM_FILES_DIR)/Makefile
+
+# Scope debug build: adds -DSCOPE_DEBUG for CPU profiling + test signals
+.PHONY: scope-debug
+scope-debug: C_DEFS += -DSCOPE_DEBUG
+scope-debug: all

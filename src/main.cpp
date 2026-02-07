@@ -37,12 +37,22 @@ DaisyPatchSM hw;
 SuperSaw     supersaw;
 Switch       toggle;
 Switch       button;
-dsy_gpio     gate_out_1;
 GateOutput   gate_logic;
 
 // State tracking
 bool prev_gate = false;
 bool prev_button = false;
+
+#ifdef SCOPE_DEBUG
+// Test signal modes: button cycles through these
+// 0 = Normal supersaw (real knobs/CV)
+// 1 = Single saw @ 440 Hz (verify waveform + freq counter)
+// 2 = Single saw @ knob pitch (verify V/Oct tracking)
+// 3 = Full supersaw @ 440 Hz, detune=0.5, mix=1.0 (verify full algo)
+int scope_mode = 0;
+constexpr int kScopeModeCount = 4;
+uint32_t led_counter = 0;
+#endif
 
 // ============================================================================
 // Audio callback — runs at interrupt priority, ~96000/4 = 24000 times/sec
@@ -52,6 +62,11 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
                            AudioHandle::OutputBuffer out,
                            size_t                    size)
 {
+#ifdef SCOPE_DEBUG
+    // CPU profiling: gate out HIGH during callback
+    hw.gate_out_1.Write(true);
+#endif
+
     // Read all hardware controls (knobs, CVs, gates, buttons)
     hw.ProcessAllControls();
 
@@ -76,12 +91,64 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
     toggle.Debounce();
     supersaw.SetAuthentic(toggle.Pressed());
 
-    // ---- Read button for manual trigger ----
+    // ---- Read button ----
     button.Debounce();
     bool btn = button.Pressed();
     bool btn_trig = (btn && !prev_button);
     prev_button = btn;
 
+#ifdef SCOPE_DEBUG
+    // Button cycles test signal modes
+    if (btn_trig) {
+        scope_mode = (scope_mode + 1) % kScopeModeCount;
+    }
+
+    switch (scope_mode) {
+    case 0:  // Normal supersaw
+    {
+        float freq = VoctToFreq(cv_pitch, knob_pitch);
+        supersaw.SetFreq(freq);
+
+        float detune_cv = (cv_detune - 0.5f) * 2.0f;
+        float detune = fclamp(knob_detune + detune_cv * 0.5f, 0.0f, 1.0f);
+        supersaw.SetDetune(detune);
+
+        float mix_cv = (cv_mix - 0.5f) * 2.0f;
+        float mix = fclamp(knob_mix + mix_cv * 0.5f, 0.0f, 1.0f);
+        supersaw.SetMix(mix);
+
+        float tone_cv = (cv_tone - 0.5f) * 2.0f;
+        float tone = fclamp(knob_tone + tone_cv * 0.5f, 0.0f, 1.0f);
+        supersaw.SetFilterOffset(0.25f + tone * 1.5f);
+
+        if (gate_trig) {
+            supersaw.Trigger();
+        }
+        break;
+    }
+    case 1:  // Single saw @ 440 Hz
+        supersaw.SetFreq(440.0f);
+        supersaw.SetDetune(0.0f);
+        supersaw.SetMix(0.0f);
+        supersaw.SetFilterOffset(0.25f);
+        break;
+    case 2:  // Single saw @ knob pitch
+    {
+        float freq = VoctToFreq(cv_pitch, knob_pitch);
+        supersaw.SetFreq(freq);
+        supersaw.SetDetune(0.0f);
+        supersaw.SetMix(0.0f);
+        supersaw.SetFilterOffset(0.25f);
+        break;
+    }
+    case 3:  // Full supersaw @ 440 Hz, fixed params
+        supersaw.SetFreq(440.0f);
+        supersaw.SetDetune(0.5f);
+        supersaw.SetMix(1.0f);
+        supersaw.SetFilterOffset(1.0f);
+        break;
+    }
+#else
     // ---- Combine knob + CV for each parameter ----
     // Pitch: knob sets base, CV adds V/Oct
     float freq = VoctToFreq(cv_pitch, knob_pitch);
@@ -111,7 +178,8 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
 
     // ---- Gate output (pass-through or clock divider) ----
     bool gate_out = gate_logic.Process(gate);
-    dsy_gpio_write(&gate_out_1, gate_out);
+    hw.gate_out_1.Write(gate_out);
+#endif
 
     // ---- Generate audio ----
     for (size_t i = 0; i < size; i++) {
@@ -121,6 +189,11 @@ static void AudioCallback(AudioHandle::InputBuffer  in,
         OUT_L[i] = sample;
         OUT_R[i] = sample;
     }
+
+#ifdef SCOPE_DEBUG
+    // CPU profiling: gate out LOW after callback completes
+    hw.gate_out_1.Write(false);
+#endif
 }
 
 // ============================================================================
@@ -147,9 +220,7 @@ int main(void) {
     button.Init(DaisyPatchSM::B7, hw.AudioCallbackRate());
 
     // Initialize gate output 1 (pin B5)
-    gate_out_1.pin = DaisyPatchSM::B5;
-    gate_out_1.mode = DSY_GPIO_MODE_OUTPUT_PP;
-    dsy_gpio_init(&gate_out_1);
+    hw.gate_out_1.Init(DaisyPatchSM::B5, GPIO::Mode::OUTPUT);
 
     // Initialize gate logic
     gate_logic.Init();
@@ -162,8 +233,19 @@ int main(void) {
 
     // Main loop: handle non-real-time tasks
     while (1) {
+#ifdef SCOPE_DEBUG
+        // LED indicates test signal mode
+        switch (scope_mode) {
+        case 0: hw.SetLed(false); break;
+        case 1: hw.SetLed(true); break;
+        case 2: hw.SetLed((led_counter / 500) % 2); break;  // slow blink
+        case 3: hw.SetLed((led_counter / 125) % 2); break;  // fast blink
+        }
+        led_counter++;
+#else
         // LED indicates gate activity
         hw.SetLed(hw.gate_in_1.State());
+#endif
 
         // Small delay to prevent tight-loop issues
         System::Delay(1);
