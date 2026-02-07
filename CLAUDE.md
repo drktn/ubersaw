@@ -124,5 +124,5 @@ defines the desired behavior. All tests must pass before considering work comple
 
 ## Current Phase
 
-Phases 1-3 complete (core engine, filter, parameter calibration). 37 tests passing.
-Next: Phase 4 (hardware polish — GPIO, ADC smoothing, anti-click).
+Phases 1-4 mostly complete. 60 tests passing. Remaining: CPU profiling and
+block size experiment (need hardware). Next: Phase 5 extended features.

@@ -38,11 +38,11 @@ Optional future work:
 - [x] ADC smoothing/filtering for stable knob readings
 - [x] Anti-click on parameter changes
 - [x] Portamento/glide option
-- [ ] Implement toggle switch GPIO reading for mode select (needs hardware)
-- [ ] Implement button GPIO reading for manual trigger (needs hardware)
+- [x] Implement toggle switch GPIO reading for mode select
+- [x] Implement button GPIO reading for manual trigger
+- [x] Gate output: pass-through or clock divider for sequencer sync
 - [ ] CPU load optimization (profile at 96 kHz with block size 4, needs hardware)
 - [ ] Consider block size 2 for lower callback noise (needs hardware)
-- [ ] Gate output: pass-through or clock divider for sequencer sync
 
 ## Phase 5: Extended features (post-1.0)
 
