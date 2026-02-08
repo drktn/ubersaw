@@ -4,10 +4,11 @@ build/
 # macOS
 .DS_Store
 
+# Claude Code
+.claude/
+
 # Test build artifacts
-tests/test_runner
-tests/test_smooth_runner
-tests/test_gate_runner
+tests/*_runner
 
 # Daisy library build artifacts
 libDaisy/build/
